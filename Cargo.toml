@@ -1,0 +1,15 @@
+[package]
+name = "ligeia"
+version = "0.1.0"
+authors = ["Lachlan Sneff <lachlan.sneff@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+structopt = "0.3"
+wgpu = "0.6"
+vcd = { git = "https://github.com/lachlansneff/rust-vcd.git" }
+mapr = "0.8.0"
+leb128 = "0.2.4"
+tempfile = "3.1.0"
