@@ -1,225 +1,225 @@
-use std::{fs::{File, OpenOptions}, io, marker::PhantomData, ops::{Deref, DerefMut}, slice, path::Path, mem};
-use mapr::{MmapOptions, MmapMut};
+use std::{convert::{TryFrom, TryInto}, fmt::{Debug, Display, Formatter}, fs::{File, OpenOptions}, io, marker::PhantomData, mem, num::NonZeroU64, ops::{Deref, DerefMut}, path::Path, slice};
+use vcd::ScopeItem;
 
-use super::VarId;
+use crate::mmap_vec::{MmapVec, VariableLength, Pod, VarMmapVec};
 
-/// Variable length data.
-pub trait VariableLength {
-    /// Maximum possible length (in bytes). Should be small.
-    fn max_length() -> usize;
-    /// Returns number of bytes written.
-    fn write_bytes(&self, b: &mut [u8]) -> usize;
-    /// Reads from `b` as necessary.
-    fn from_bytes(b: &mut &[u8]) -> Self;
+pub struct NotValidVarIdError(());
+
+impl Debug for NotValidVarIdError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "failed to convert to VarId")
+    }
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+pub struct VarId(NonZeroU64);
+
+impl VarId {
+    pub fn new(x: u64) -> Result<Self, NotValidVarIdError> {
+        if (1u64 << 63) & x != 0 {
+            Err(NotValidVarIdError(()))
+        } else {
+            Ok(Self(unsafe {
+                NonZeroU64::new_unchecked(x << 1)
+            }))
+        }
+    }
+
+    pub fn get(&self) -> u64 {
+        self.0.get() >> 1
+    }
+}
+
+impl TryFrom<u64> for VarId {
+    type Error = NotValidVarIdError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<VarId> for u64 {
+    fn from(var_id: VarId) -> Self {
+        var_id.get()
+    }
+}
+
+impl Debug for VarId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        <u64 as Debug>::fmt(&self.get(), f)
+    }
+}
+
+impl Display for VarId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        <u64 as Display>::fmt(&self.get(), f)
+    }
+}
+
+// pub type VarId = u64;
+
+#[derive(Debug)]
+pub struct VarInfo {
+    name: String,
+    id: VarId,
+}
+
+#[derive(Debug)]
+pub struct Scope {
+    name: String,
+    scopes: Vec<Scope>,
+    vars: Vec<VarInfo>,
+}
+
+pub fn find_all_scopes_and_variables(header: vcd::Header) -> (Scope, Vec<VarId>) {
+    fn recurse(ids: &mut Vec<VarId>, items: impl Iterator<Item=vcd::ScopeItem>) -> (Vec<Scope>, Vec<VarInfo>) {
+        let mut scopes = vec![];
+        let mut vars = vec![];
+
+        for item in items {
+            match item {
+                ScopeItem::Var(var) => {
+                    ids.push(var.code.number().try_into().unwrap());
+                    vars.push(VarInfo {
+                        name: var.reference,
+                        id: var.code.number().try_into().unwrap(),
+                    })
+                }
+                ScopeItem::Scope(scope) => {
+                    let (sub_scopes, sub_vars) = recurse(ids, scope.children.into_iter());
+                    scopes.push(Scope {
+                        name: scope.identifier,
+                        scopes: sub_scopes,
+                        vars: sub_vars,
+                    });
+                }
+            }
+        }
+
+        (scopes, vars)
+    }
+
+    let (name, top_items) = header.items.into_iter().find_map(|item| {
+        if let ScopeItem::Scope(scope) = item {
+            Some((scope.identifier, scope.children))
+        } else {
+            None
+        }
+    }).expect("failed to find top-level scope in vcd file");
+
+    let mut ids = Vec::new();
+    let (scopes, vars) = recurse(&mut ids, top_items.into_iter());
+
+    ids.sort_unstable();
+    ids.dedup();
+
+    // INFO: Turns out the variable ids are usually sequential, but not always
+    // let mut previous = vars[0].id;
+    // for var in vars[1..].iter() {
+    //     if var.id != previous + 1 {
+    //         eprintln!("wasn't sequential at {}", var.id);
+    //     }
+    //     previous = var.id;
+    // }
+    
+    (Scope {
+        name, scopes, vars,
+    }, ids)
 }
 
 impl VariableLength for u64 {
+    type Meta = ();
+
     #[inline]
-    fn max_length() -> usize {
+    fn max_length(_: &()) -> usize {
         10
     }
 
     #[inline]
-    fn write_bytes(&self, mut b: &mut [u8]) -> usize {
+    fn write_bytes(&self, _: &(), mut b: &mut [u8]) -> usize {
         leb128::write::unsigned(&mut b, *self).unwrap()
     }
 
     #[inline]
-    fn from_bytes(b: &mut &[u8]) -> Self {
+    fn from_bytes(_: &(), b: &mut &[u8]) -> Self {
         leb128::read::unsigned(b).unwrap()
     }
 }
 
-/// Creates an appendable vector that's backed by
-/// an anonymous, temporary file, so it can contain more data than
-/// fits in physical memory.
-pub struct VarMmapVec<T> {
-    f: File,
-    mapping: MmapMut,
-    count: &'static mut u64,
-    bytes: usize,
-    cap: usize,
-    _marker: PhantomData<T>,
-}
+impl VariableLength for VarId {
+    type Meta = ();
 
-impl<T: VariableLength> VarMmapVec<T> {
-    pub unsafe fn create() -> io::Result<Self> {
-        let f = tempfile::tempfile()?;
-
-        let cap = 4096; // Let's try a single page to start.
-
-        f.set_len(cap)?;
-
-        let mapping = MmapOptions::new()
-            .len(cap as usize)
-            .map_mut(&f)?;
-
-        let count = &mut *(mapping.as_ptr() as *mut u64);
-
-        Ok(Self {
-            f,
-            mapping,
-            count,
-            bytes: 16,
-            cap: cap as usize,
-            _marker: PhantomData,
-        })
+    #[inline]
+    fn max_length(_: &()) -> usize {
+        10
     }
 
-    /// Returns offset of item in buffer.
-    pub fn push(&mut self, v: T) -> usize {
-        if self.bytes + T::max_length() >= self.cap {
-            self.realloc();
-        }
-
-        let offset = self.bytes;
-
-        self.bytes += v.write_bytes(&mut self.mapping[self.bytes..]);
-        *self.count += 1;
-        offset
+    #[inline]
+    fn write_bytes(&self, _: &(), mut b: &mut [u8]) -> usize {
+        leb128::write::unsigned(&mut b, self.0.get()).unwrap()
     }
 
-    #[cold]
-    fn realloc(&mut self) {
-        self.cap *= 2;
-        self.f.set_len(self.cap as u64).expect("failed to extend file");
-        let mapping = unsafe {
-            MmapOptions::new()
-                .len(self.cap)
-                .map_mut(&self.f)
-                .expect("failed to create to mapping")
-        };
-        self.mapping = mapping;
-        self.count = unsafe { &mut *(self.mapping.as_ptr() as *mut u64) };
-    }
-
-    pub fn iter(&self) -> MmapVecIter<T> {
-        MmapVecIter {
-            data: &self.mapping[16..],
-            count: *self.count,
-            _marker: PhantomData,
-        }
-    }
-
-    pub fn flush(&self) {
-        self.mapping.flush().expect("failed to flush mapping");
-    }
-
-    /// This will return garbage if the offset is not aligned to the beginning
-    /// of a variable-length item.
-    pub fn get_at_offset(&self, offset: usize) -> T {
-        T::from_bytes(&mut &self.mapping[offset..])
+    #[inline]
+    fn from_bytes(_: &(), b: &mut &[u8]) -> Self {
+        VarId(NonZeroU64::new(leb128::read::unsigned(b).unwrap()).unwrap())
     }
 }
 
-pub struct MmapVecIter<'a, T> {
+struct BitIter<'a> {
+    bits: usize,
+    index: usize,
     data: &'a [u8],
-    count: u64,
-    _marker: PhantomData<T>,
 }
 
-impl<'a, T: VariableLength> Iterator for MmapVecIter<'a, T> {
-    type Item = T;
+impl BitIter<'_> {
+    pub fn num_bits(&self) -> usize {
+        self.bits
+    }
+}
+
+impl<'a> Iterator for BitIter<'a> {
+    type Item = bool;
     fn next(&mut self) -> Option<Self::Item> {
-        if self.count > 0 {
-            self.count -= 1;
-            Some(T::from_bytes(&mut self.data))
+        if self.index < self.bits {
+            let byte = self.data[self.index / 8];
+            let bit = byte & (1 << (self.index % 8)) != 0;
+            self.index += 1;
+
+            Some(bit)
         } else {
             None
         }
     }
 }
 
-pub unsafe trait Pod: Copy + Sized {}
-
-unsafe impl Pod for u64 {}
-
-struct ConstantLength<T>(T);
-
-impl<T: Pod> VariableLength for ConstantLength<T> {
-    fn max_length() -> usize {
-        mem::size_of::<T>()
-    }
-
-    fn write_bytes(&self, b: &mut [u8]) -> usize {
-        assert!(b.len() >= mem::size_of::<T>());
-        unsafe { *(b.as_mut_ptr() as *mut T) = self.0 };
-        mem::size_of::<T>()
-    }
-
-    fn from_bytes(b: &mut &[u8]) -> Self {
-        assert!(b.len() >= mem::size_of::<T>());
-        let v = unsafe { *(b.as_ptr() as *const T) };
-        *b = &b[mem::size_of::<T>()..];
-
-        Self(v)
-    }
-}
-
-pub struct MmapVec<T> {
-    inner: VarMmapVec<ConstantLength<T>>,
-    len: usize,
-}
-
-impl<T: Pod> MmapVec<T> {
-    pub unsafe fn create() -> io::Result<Self> {
-        Ok(Self {
-            inner: VarMmapVec::create()?,
-            len: 0,
-        })
-    }
-
-    /// Returns index of value.
-    pub fn push(&mut self, v: T) -> usize {
-        self.inner.push(ConstantLength(v));
-        let index = self.len;
-        self.len += 1;
-        index
-    }
-}
-
-impl<T: Pod> Deref for MmapVec<T> {
-    type Target = [T];
-    
-    fn deref(&self) -> &Self::Target {
-        let slice = &self.inner.mapping[16..];
-        unsafe {
-            slice::from_raw_parts(slice.as_ptr() as *const T, self.len)
-        }
-    }
-}
-
-impl<T: Pod> DerefMut for MmapVec<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        let slice = &mut self.inner.mapping[16..];
-        unsafe {
-            slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut T, self.len)
-        }
-    }
-}
-
-struct StreamingValueChange {
+struct StreamingValueChange<'a> {
     var_id: VarId,
     offset_to_prev: u64,
+    bits: BitIter<'a>
 }
 
-impl VariableLength for StreamingValueChange {
+impl<'a> VariableLength for StreamingValueChange<'a> {
+    type Meta = usize;
+
     #[inline]
-    fn max_length() -> usize {
-        <u64 as VariableLength>::max_length() * 2
+    fn max_length(bits: &usize) -> usize {
+        <u64 as VariableLength>::max_length(&()) * 2 + (*bits / 8)
     }
 
     #[inline]
-    fn write_bytes(&self, mut b: &mut [u8]) -> usize {
-        let b = &mut b;
-        <u64 as VariableLength>::write_bytes(&self.var_id, b)
-        + <u64 as VariableLength>::write_bytes(&self.offset_to_prev, b)
+    fn write_bytes(&self, bits: &usize, mut b: &mut [u8]) -> usize {
+        let header = <_ as VariableLength>::write_bytes(&self.var_id, &(), &mut b)
+            + <_ as VariableLength>::write_bytes(&self.offset_to_prev, &(), &mut b);
+        
+
+
+        header + (*bits / 8)
     }
 
     #[inline]
-    fn from_bytes(b: &mut &[u8]) -> Self {
-        let var_id = <_ as VariableLength>::from_bytes(b);
-        let offset_to_prev = <_ as VariableLength>::from_bytes(b);
+    fn from_bytes(bits: &usize, b: &mut &[u8]) -> Self {
+        let var_id = <_ as VariableLength>::from_bytes(&(), b);
+        let offset_to_prev = <_ as VariableLength>::from_bytes(&(), b);
 
         Self {
             var_id,
@@ -233,7 +233,7 @@ impl VariableLength for StreamingValueChange {
 #[repr(C)]
 pub struct StreamingVarMeta {
     var_id: VarId,
-    last_value_change_offset: u64,
+    last_value_change_offset: Option<NonZeroU64>,
     number_of_value_changes: u64,
 }
 

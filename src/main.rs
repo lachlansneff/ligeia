@@ -1,5 +1,5 @@
 
-use std::{fs::File, collections::HashSet, io, path::PathBuf, collections::HashMap};
+use std::{convert::TryFrom, fmt::Debug, fmt::{Display, Formatter}, fs::File, io, num::NonZeroU64, path::PathBuf, convert::TryInto};
 
 use structopt::StructOpt;
 use vcd::{self, ScopeItem, Value, TimescaleUnit, SimulationCommand};
@@ -10,8 +10,7 @@ use winit::{
 };
 
 mod db;
-
-use db::VarMmapVec;
+mod mmap_vec;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "ligeia", about="A waveform display program.")]
@@ -33,7 +32,11 @@ fn main() -> io::Result<()> {
 
     // println!("{:#?}", header);
 
-    let (tree, vars) = find_all_scopes_and_variables(header);
+    let (tree, vars) = db::find_all_scopes_and_variables(header);
+
+    for var_id in vars {
+        println!("{}", var_id);
+    }
 
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new().build(&event_loop).unwrap();
@@ -120,77 +123,6 @@ fn main() -> io::Result<()> {
     // }
 
     // Ok(())
-}
-
-pub type VarId = u64;
-
-#[derive(Debug)]
-pub struct VarInfo {
-    name: String,
-    id: VarId,
-}
-
-#[derive(Debug)]
-pub struct Scope {
-    name: String,
-    scopes: Vec<Scope>,
-    vars: Vec<VarInfo>,
-}
-
-fn find_all_scopes_and_variables(header: vcd::Header) -> (Scope, Vec<VarId>) {
-    fn recurse(ids: &mut Vec<VarId>, items: impl Iterator<Item=vcd::ScopeItem>) -> (Vec<Scope>, Vec<VarInfo>) {
-        let mut scopes = vec![];
-        let mut vars = vec![];
-
-        for item in items {
-            match item {
-                ScopeItem::Var(var) => {
-                    ids.push(var.code.number());
-                    vars.push(VarInfo {
-                        name: var.reference,
-                        id: var.code.number(),
-                    })
-                }
-                ScopeItem::Scope(scope) => {
-                    let (sub_scopes, sub_vars) = recurse(ids, scope.children.into_iter());
-                    scopes.push(Scope {
-                        name: scope.identifier,
-                        scopes: sub_scopes,
-                        vars: sub_vars,
-                    });
-                }
-            }
-        }
-
-        (scopes, vars)
-    }
-
-    let (name, top_items) = header.items.into_iter().find_map(|item| {
-        if let ScopeItem::Scope(scope) = item {
-            Some((scope.identifier, scope.children))
-        } else {
-            None
-        }
-    }).expect("failed to find top-level scope in vcd file");
-
-    let mut ids = Vec::new();
-    let (scopes, vars) = recurse(&mut ids, top_items.into_iter());
-
-    ids.sort_unstable();
-    ids.dedup();
-
-    // INFO: Turns out the variable ids are usually sequential, but not always
-    // let mut previous = vars[0].id;
-    // for var in vars[1..].iter() {
-    //     if var.id != previous + 1 {
-    //         eprintln!("wasn't sequential at {}", var.id);
-    //     }
-    //     previous = var.id;
-    // }
-    
-    (Scope {
-        name, scopes, vars,
-    }, ids)
 }
 
 // fn load_data()
