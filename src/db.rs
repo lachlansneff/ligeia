@@ -198,12 +198,12 @@ impl<T: Pod> DerefMut for MmapVec<T> {
     }
 }
 
-struct ValueChange {
+struct StreamingValueChange {
     var_id: VarId,
     offset_to_prev: u64,
 }
 
-impl VariableLength for ValueChange {
+impl VariableLength for StreamingValueChange {
     #[inline]
     fn max_length() -> usize {
         <u64 as VariableLength>::max_length() * 2
@@ -231,20 +231,20 @@ impl VariableLength for ValueChange {
 /// The variable id is the index of this in the `var_data` structure.
 #[derive(Copy, Clone)]
 #[repr(C)]
-pub struct VarMeta {
+pub struct StreamingVarMeta {
     var_id: VarId,
     last_value_change_offset: u64,
     number_of_value_changes: u64,
 }
 
 /// Hopefully this isn't a terrible idea.
-unsafe impl Pod for Option<VarMeta> {}
+unsafe impl Pod for Option<StreamingVarMeta> {}
 
 /// Used to compactly convert from a vcd to a structure
 /// that can be easily traversed in order to create a
 /// db that can be easily and quickly searched.
 struct StreamingDb {
-    var_data: MmapVec<Option<VarMeta>>,
+    var_data: MmapVec<Option<StreamingVarMeta>>,
     timestamp_chain: VarMmapVec<u64>,
-    value_change: VarMmapVec<ValueChange>,
+    value_change: VarMmapVec<StreamingValueChange>,
 }
