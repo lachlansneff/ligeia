@@ -1,15 +1,27 @@
 use std::{fs::File, io, marker::PhantomData, mem, ops::{Deref, DerefMut}, slice};
 use mapr::{MmapOptions, MmapMut};
 
+pub trait WriteData<Parent: VariableLength = Self> {
+    fn write_bytes(&mut self, meta: &<Parent as VariableLength>::Meta, b: &mut [u8]) -> usize;
+}
+
+// default impl<T: VariableLength> WriteData for T {
+//     type Parent = Self;
+//     fn write_bytes(&self, _meta: &<Self as VariableLength>::Meta, _b: &mut [u8]) -> usize {
+//         unimplemented!()
+//     }
+// }
+
 /// Variable length data.
 pub trait VariableLength {
     type Meta;
+    type ReadData<'a>;
     /// Maximum possible length (in bytes). Should be small.
     fn max_length(meta: &Self::Meta) -> usize;
     /// Returns number of bytes written.
-    fn write_bytes(&self, meta: &Self::Meta, b: &mut [u8]) -> usize;
+    fn write_bytes(data: impl WriteData<Self>, meta: &Self::Meta, b: &mut [u8]) -> usize where Self: Sized;
     /// Reads from `b` as necessary.
-    fn from_bytes(meta: &Self::Meta, b: &mut &[u8]) -> Self;
+    fn from_bytes<'a>(meta: &Self::Meta, b: &mut &'a [u8]) -> Self::ReadData<'a>;
 }
 
 /// Creates an appendable vector that's backed by
@@ -48,17 +60,47 @@ impl<T: VariableLength> VarMmapVec<T> {
         })
     }
 
+    unsafe fn create_with_capacity(cap: usize) -> io::Result<Self> {
+        let f = tempfile::tempfile()?;
+
+        let cap = (cap as u64 + 4096 - 1) & !(4096 - 1);
+
+        f.set_len(cap)?;
+
+        let mapping = MmapOptions::new()
+            .len(cap as usize)
+            .map_mut(&f)?;
+
+        let count = &mut *(mapping.as_ptr() as *mut u64);
+
+        Ok(Self {
+            f,
+            mapping,
+            count,
+            bytes: 16,
+            cap: cap as usize,
+            _marker: PhantomData,
+        })
+    }
+
     /// Returns offset of item in buffer.
-    pub fn push(&mut self, meta: &T::Meta, v: T) -> usize {
+    pub fn push<V>(&mut self, meta: &T::Meta, v: V) -> u64
+    where
+        V: WriteData<T>
+    {
         if self.bytes + T::max_length(meta) >= self.cap {
             self.realloc();
         }
 
         let offset = self.bytes;
 
-        self.bytes += v.write_bytes(meta, &mut self.mapping[self.bytes..]);
+        self.bytes += T::write_bytes(v, meta, &mut self.mapping[self.bytes..]);
         *self.count += 1;
-        offset
+        offset as _
+    }
+
+    pub fn current_offset(&self) -> u64 {
+        self.bytes as _
     }
 
     #[cold]
@@ -77,7 +119,7 @@ impl<T: VariableLength> VarMmapVec<T> {
 
     pub fn iter(&self) -> MmapVecIter<T> {
         MmapVecIter {
-            data: &self.mapping[16..],
+            bytes: &self.mapping[16..],
             count: *self.count,
             _marker: PhantomData,
         }
@@ -95,16 +137,16 @@ impl<T: VariableLength> VarMmapVec<T> {
 }
 
 pub struct MmapVecIter<'a, T> {
-    data: &'a [u8],
+    bytes: &'a [u8],
     count: u64,
     _marker: PhantomData<T>,
 }
 
 impl<'a, T: VariableLength> MmapVecIter<'a, T> {
-    pub fn next(&mut self, meta: &T::Meta) -> Option<T> {
+    pub fn next_data(&mut self, meta: &T::Meta) -> Option<T::ReadData<'a>> {
         if self.count > 0 {
             self.count -= 1;
-            Some(T::from_bytes(meta, &mut self.data))
+            Some(T::from_bytes(meta, &mut self.bytes))
         } else {
             None
         }
@@ -129,16 +171,24 @@ unsafe impl Pod for u64 {}
 
 struct ConstantLength<T>(T);
 
+impl<T: Pod> WriteData for ConstantLength<T> {
+    fn write_bytes(&mut self, _: &(), b: &mut [u8]) -> usize {
+        unsafe { *(b.as_mut_ptr() as *mut T) = self.0 };
+        mem::size_of::<T>()
+    }
+}
+
 impl<T: Pod> VariableLength for ConstantLength<T> {
     type Meta = ();
+    type ReadData<'a> = Self;
+
     fn max_length(_: &()) -> usize {
         mem::size_of::<T>()
     }
 
-    fn write_bytes(&self, _: &(), b: &mut [u8]) -> usize {
+    fn write_bytes(mut data: impl WriteData<Self>, _: &(), b: &mut [u8]) -> usize {
         assert!(b.len() >= mem::size_of::<T>());
-        unsafe { *(b.as_mut_ptr() as *mut T) = self.0 };
-        mem::size_of::<T>()
+        data.write_bytes(&(), b)
     }
 
     fn from_bytes(_: &(), b: &mut &[u8]) -> Self {
@@ -159,6 +209,13 @@ impl<T: Pod> MmapVec<T> {
     pub unsafe fn create() -> io::Result<Self> {
         Ok(Self {
             inner: VarMmapVec::create()?,
+            len: 0,
+        })
+    }
+
+    pub unsafe fn create_with_capacity(capacity: usize) -> io::Result<Self> {
+        Ok(Self {
+            inner: VarMmapVec::create_with_capacity(capacity * mem::size_of::<T>())?,
             len: 0,
         })
     }
