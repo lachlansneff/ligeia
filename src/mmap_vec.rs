@@ -2,7 +2,13 @@ use std::{fs::File, io, marker::PhantomData, mem, ops::{Deref, DerefMut}, slice}
 use mapr::{MmapOptions, MmapMut};
 
 pub trait WriteData<Parent: VariableLength = Self> {
-    fn write_bytes(&mut self, meta: &<Parent as VariableLength>::Meta, b: &mut [u8]) -> usize;
+    /// Maximum possible length (in bytes). Should be small.
+    fn max_size(meta: <Parent as VariableLength>::Meta) -> usize;
+    fn write_bytes(&mut self, meta: <Parent as VariableLength>::Meta, b: &mut [u8]) -> usize;
+}
+
+pub trait ReadData<'a, Parent: VariableLength = Self>: Sized {
+    fn read_data(meta: <Parent as VariableLength>::Meta, b: &'a [u8]) -> (Self, usize);
 }
 
 // default impl<T: VariableLength> WriteData for T {
@@ -14,14 +20,25 @@ pub trait WriteData<Parent: VariableLength = Self> {
 
 /// Variable length data.
 pub trait VariableLength {
-    type Meta;
-    type ReadData<'a>;
-    /// Maximum possible length (in bytes). Should be small.
-    fn max_length(meta: &Self::Meta) -> usize;
-    /// Returns number of bytes written.
-    fn write_bytes(data: impl WriteData<Self>, meta: &Self::Meta, b: &mut [u8]) -> usize where Self: Sized;
-    /// Reads from `b` as necessary.
-    fn from_bytes<'a>(meta: &Self::Meta, b: &mut &'a [u8]) -> Self::ReadData<'a>;
+    type Meta: Copy;
+    type DefaultReadData;
+
+    // fn max_size(meta: Self::Meta) -> usize;
+
+    // /// Returns number of bytes written.
+    // #[inline]
+    // fn write_bytes(mut data: impl WriteData<Self>, meta: Self::Meta, b: &mut [u8]) -> usize
+    //     where Self: Sized
+    // {
+    //     data.write_bytes(meta, b)
+    // }
+
+    // /// Reads from `b` as necessary.
+    // fn from_bytes<'a, Data: ReadData<'a, Self>>(meta: Self::Meta, b: &'a [u8]) -> (Data, usize)
+    //     where Self: Sized
+    // {
+    //     Data::read_data(meta, b)
+    // }
 }
 
 /// Creates an appendable vector that's backed by
@@ -84,17 +101,17 @@ impl<T: VariableLength> VarMmapVec<T> {
     }
 
     /// Returns offset of item in buffer.
-    pub fn push<V>(&mut self, meta: &T::Meta, v: V) -> u64
+    pub fn push<Data>(&mut self, meta: T::Meta, mut data: Data) -> u64
     where
-        V: WriteData<T>
+        Data: WriteData<T>
     {
-        if self.bytes + T::max_length(meta) >= self.cap {
+        if self.bytes + Data::max_size(meta) >= self.cap {
             self.realloc();
         }
 
         let offset = self.bytes;
 
-        self.bytes += T::write_bytes(v, meta, &mut self.mapping[self.bytes..]);
+        self.bytes += data.write_bytes(meta, &mut self.mapping[self.bytes..]);
         *self.count += 1;
         offset as _
     }
@@ -117,7 +134,7 @@ impl<T: VariableLength> VarMmapVec<T> {
         self.count = unsafe { &mut *(self.mapping.as_ptr() as *mut u64) };
     }
 
-    pub fn iter(&self) -> MmapVecIter<T> {
+    pub fn iter<Data>(&self) -> MmapVecIter<T, Data> {
         MmapVecIter {
             bytes: &self.mapping[16..],
             count: *self.count,
@@ -136,17 +153,19 @@ impl<T: VariableLength> VarMmapVec<T> {
     // }
 }
 
-pub struct MmapVecIter<'a, T> {
+pub struct MmapVecIter<'a, T: VariableLength, Data = <T as VariableLength>::DefaultReadData> {
     bytes: &'a [u8],
     count: u64,
-    _marker: PhantomData<T>,
+    _marker: PhantomData<(T, Data)>,
 }
 
-impl<'a, T: VariableLength> MmapVecIter<'a, T> {
-    pub fn next_data(&mut self, meta: &T::Meta) -> Option<T::ReadData<'a>> {
+impl<'a, T: VariableLength, Data: ReadData<'a, T>> MmapVecIter<'a, T, Data> {
+    pub fn next_data(&mut self, meta: T::Meta) -> Option<Data> {
         if self.count > 0 {
             self.count -= 1;
-            Some(T::from_bytes(meta, &mut self.bytes))
+            let (data, offset) = Data::read_data(meta, &mut self.bytes);
+            self.bytes = &self.bytes[offset..];
+            Some(data)
         } else {
             None
         }
@@ -172,32 +191,29 @@ unsafe impl Pod for u64 {}
 struct ConstantLength<T>(T);
 
 impl<T: Pod> WriteData for ConstantLength<T> {
-    fn write_bytes(&mut self, _: &(), b: &mut [u8]) -> usize {
+    fn max_size(_: ()) -> usize {
+        mem::size_of::<T>()
+    }
+
+    fn write_bytes(&mut self, _: (), b: &mut [u8]) -> usize {
+        assert!(b.len() >= mem::size_of::<T>());
         unsafe { *(b.as_mut_ptr() as *mut T) = self.0 };
         mem::size_of::<T>()
     }
 }
 
-impl<T: Pod> VariableLength for ConstantLength<T> {
-    type Meta = ();
-    type ReadData<'a> = Self;
-
-    fn max_length(_: &()) -> usize {
-        mem::size_of::<T>()
-    }
-
-    fn write_bytes(mut data: impl WriteData<Self>, _: &(), b: &mut [u8]) -> usize {
-        assert!(b.len() >= mem::size_of::<T>());
-        data.write_bytes(&(), b)
-    }
-
-    fn from_bytes(_: &(), b: &mut &[u8]) -> Self {
+impl<'a, T: Pod> ReadData<'a> for ConstantLength<T> {
+    fn read_data(_: (), b: &[u8]) -> (Self, usize) {
         assert!(b.len() >= mem::size_of::<T>());
         let v = unsafe { *(b.as_ptr() as *const T) };
-        *b = &b[mem::size_of::<T>()..];
 
-        Self(v)
+        (Self(v), mem::size_of::<T>())
     }
+}
+
+impl<T: Pod> VariableLength for ConstantLength<T> {
+    type Meta = ();
+    type DefaultReadData = Self;
 }
 
 pub struct MmapVec<T> {
@@ -222,7 +238,7 @@ impl<T: Pod> MmapVec<T> {
 
     /// Returns index of value.
     pub fn push(&mut self, v: T) -> usize {
-        self.inner.push(&(), ConstantLength(v));
+        self.inner.push((), ConstantLength(v));
         let index = self.len;
         self.len += 1;
         index

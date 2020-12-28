@@ -2,7 +2,7 @@
 
 use std::{convert::TryFrom, fmt::Debug, fmt::{Display, Formatter}, fs::File, io, num::NonZeroU64, path::PathBuf, convert::TryInto};
 
-use db::{Bit, BitIter, StreamingDb, StreamingVCBits, StreamingValueChange, VarId};
+use db::{Bit, BitIter, StreamingDb, StreamingVCBits, VarId};
 use io::BufReader;
 use structopt::StructOpt;
 use vcd::{self, ScopeItem, Value, TimescaleUnit, SimulationCommand};
@@ -28,9 +28,13 @@ fn main() -> io::Result<()> {
     let opt: Opt = Opt::from_args();
     println!("{:?}", opt);
 
-    let mut f = File::open(&opt.file)?;
+    let f = File::open(&opt.file)?;
 
-    let mut parser = vcd::Parser::new(BufReader::with_capacity(1_000_000, &mut f));
+    // let mut parser = vcd::Parser::new(BufReader::with_capacity(1_000_000, &mut f));
+
+    let map = unsafe { mapr::Mmap::map(&f)? };
+
+    let mut parser = vcd::Parser::new(&map[..]);
 
     let streaming_db = StreamingDb::load_vcd(&mut parser)?;
 

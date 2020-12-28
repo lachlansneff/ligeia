@@ -1,7 +1,7 @@
-use std::{convert::{TryFrom, TryInto}, fmt::{Debug, Display, Formatter}, fs::{File, OpenOptions}, io::{self, Read}, marker::PhantomData, mem, num::NonZeroU64, ops::{Deref, DerefMut}, path::Path, slice, unimplemented};
+use std::{collections::HashMap, convert::{TryFrom, TryInto}, fmt::{Debug, Display, Formatter}, io::{self, Read}, mem, num::NonZeroU64, slice};
 use vcd::{Command, Parser, ScopeItem, Value};
 
-use crate::mmap_vec::{MmapVec, Pod, VarMmapVec, VariableLength, WriteData};
+use crate::mmap_vec::{MmapVec, Pod, VarMmapVec, VariableLength, WriteData, ReadData};
 
 pub struct NotValidVarIdError(());
 
@@ -11,7 +11,7 @@ impl Debug for NotValidVarIdError {
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct VarId(NonZeroU64);
 
 impl VarId {
@@ -61,18 +61,23 @@ impl Display for VarId {
 #[derive(Debug)]
 pub struct VarInfo {
     name: String,
-    id: VarId,
+    bits: u32,
 }
 
 #[derive(Debug)]
 pub struct Scope {
     name: String,
     scopes: Vec<Scope>,
-    vars: Vec<VarInfo>,
+    vars: Vec<VarId>,
 }
 
-fn find_all_scopes_and_variables(header: vcd::Header) -> (Scope, Vec<VarId>) {
-    fn recurse(ids: &mut Vec<VarId>, items: impl Iterator<Item=vcd::ScopeItem>) -> (Vec<Scope>, Vec<VarInfo>) {
+pub struct VarTree {
+    scope: Scope,
+    variables: HashMap<VarId, VarInfo>,
+}
+
+fn find_all_scopes_and_variables(header: vcd::Header) -> VarTree {
+    fn recurse(variables: &mut HashMap<VarId, VarInfo>, items: impl Iterator<Item=vcd::ScopeItem>) -> (Vec<Scope>, Vec<VarId>) {
         let mut scopes = vec![];
         let mut vars = vec![];
 
@@ -80,14 +85,14 @@ fn find_all_scopes_and_variables(header: vcd::Header) -> (Scope, Vec<VarId>) {
             match item {
                 ScopeItem::Var(var) => {
                     let id = var.code.number().try_into().unwrap();
-                    ids.push(id);
-                    vars.push(VarInfo {
+                    vars.push(id);
+                    variables.insert(id, VarInfo {
                         name: var.reference,
-                        id,
-                    })
+                        bits: var.size,
+                    });
                 }
                 ScopeItem::Scope(scope) => {
-                    let (sub_scopes, sub_vars) = recurse(ids, scope.children.into_iter());
+                    let (sub_scopes, sub_vars) = recurse(variables, scope.children.into_iter());
                     scopes.push(Scope {
                         name: scope.identifier,
                         scopes: sub_scopes,
@@ -108,11 +113,8 @@ fn find_all_scopes_and_variables(header: vcd::Header) -> (Scope, Vec<VarId>) {
         }
     }).expect("failed to find top-level scope in vcd file");
 
-    let mut ids = Vec::new();
-    let (scopes, vars) = recurse(&mut ids, top_items.into_iter());
-
-    ids.sort_unstable();
-    ids.dedup();
+    let mut variables = HashMap::new();
+    let (scopes, vars) = recurse(&mut variables, top_items.into_iter());
 
     // INFO: Turns out the variable ids are usually sequential, but not always
     // let mut previous = vars[0].id;
@@ -122,62 +124,60 @@ fn find_all_scopes_and_variables(header: vcd::Header) -> (Scope, Vec<VarId>) {
     //     }
     //     previous = var.id;
     // }
-    
-    (Scope {
-        name, scopes, vars,
-    }, ids)
+
+    VarTree {
+        scope: Scope {
+            name, scopes, vars,
+        },
+        variables,
+    }
 }
 
 impl WriteData for u64 {
-    fn write_bytes(&mut self, _: &(), mut b: &mut [u8]) -> usize {
-        leb128::write::unsigned(&mut b, *self).unwrap()
+    #[inline]
+    fn max_size(_: ()) -> usize {
+        10
+    }
+
+    fn write_bytes(&mut self, _: (), b: &mut [u8]) -> usize {
+        // leb128::write::unsigned(&mut b, *self).unwrap()
+        varint_simd::encode_to_slice(*self, b) as usize
+    }
+}
+impl ReadData<'_> for u64 {
+    fn read_data(_: (), b: &[u8]) -> (Self, usize) {
+        varint_simd::decode(b)
+            .map(|(int, size)| (int, size as _))
+            .unwrap()
     }
 }
 
 impl VariableLength for u64 {
     type Meta = ();
-    type ReadData<'a> = Self;
-
-    #[inline]
-    fn max_length(_: &()) -> usize {
-        10
-    }
-
-    #[inline]
-    fn write_bytes(mut data: impl WriteData<Self>, _: &(), b: &mut [u8]) -> usize {
-        data.write_bytes(&(), b)
-    }
-
-    #[inline]
-    fn from_bytes(_: &(), b: &mut &[u8]) -> Self {
-        leb128::read::unsigned(b).unwrap()
-    }
+    type DefaultReadData = Self;
 }
 
 impl WriteData for VarId {
-    fn write_bytes(&mut self, _: &(), mut b: &mut [u8]) -> usize {
-        leb128::write::unsigned(&mut b, self.0.get()).unwrap()
+    #[inline]
+    fn max_size(_: ()) -> usize {
+        10
+    }
+
+    fn write_bytes(&mut self, _: (), b: &mut [u8]) -> usize {
+        // leb128::write::unsigned(&mut b, self.0.get()).unwrap()
+        varint_simd::encode_to_slice(self.0.get(), b) as usize
+    }
+}
+impl ReadData<'_> for VarId {
+    fn read_data(_: (), b: &[u8]) -> (Self, usize) {
+        let (int, size) = varint_simd::decode(b).unwrap();
+        (VarId(unsafe { NonZeroU64::new_unchecked(int) }), size as _)
     }
 }
 
 impl VariableLength for VarId {
     type Meta = ();
-    type ReadData<'a> = Self;
-
-    #[inline]
-    fn max_length(_: &()) -> usize {
-        10
-    }
-
-    #[inline]
-    fn write_bytes(mut data: impl WriteData<Self>, _: &(), b: &mut [u8]) -> usize {
-        data.write_bytes(&(), b)
-    }
-
-    #[inline]
-    fn from_bytes(_: &(), b: &mut &[u8]) -> Self {
-        VarId(NonZeroU64::new(leb128::read::unsigned(b).unwrap()).unwrap())
-    }
+    type DefaultReadData = Self;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -281,16 +281,15 @@ impl Debug for BitIter<'_> {
     }
 }
 
-impl<T: Iterator<Item = Bit>> WriteData<StreamingValueChange> for StreamingVCBits<T> {
-    fn write_bytes(&mut self, bits: &usize, mut b: &mut [u8]) -> usize {
-        let mut header = <VarId as VariableLength>::write_bytes(self.var_id, &(), &mut b);
-        header += <u64 as VariableLength>::write_bytes(self.offset_to_prev, &(), &mut b[header..]);
-        header += <u64 as VariableLength>::write_bytes(self.timestamp_delta_index, &(), &mut b[header..]);
+pub trait WriteBits: Iterator<Item = Bit> {
+    fn write_bits(&mut self, bytes: &mut [u8]);
+}
 
-        let bytes = (*bits + 8 - 1) / 8;
-
-        for byte in b[header..header + bytes].iter_mut() {
-            for (i, bit) in (&mut self.bits).take(4).enumerate() {
+impl<T: Iterator<Item = Bit>> WriteBits for T {
+    #[inline]
+    fn write_bits(&mut self, bytes: &mut [u8]) {
+        for byte in bytes.iter_mut() {
+            for (i, bit) in self.take(4).enumerate() {
                 let raw_bit = match bit {
                     Bit::X => 0b00,
                     Bit::Z => 0b01,
@@ -301,50 +300,93 @@ impl<T: Iterator<Item = Bit>> WriteData<StreamingValueChange> for StreamingVCBit
                 *byte |= raw_bit << (i * 2);
             }
         }
-
-        header + bytes
     }
 }
 
-pub struct StreamingValueChange(());
+enum StreamingValueChange {}
 
 #[derive(Debug)]
-pub struct StreamingVCBits<T> {
+pub struct StreamingVCBits<T: WriteBits> {
     pub var_id: VarId,
     pub offset_to_prev: u64,
     pub timestamp_delta_index: u64,
     pub bits: T,
 }
 
-impl VariableLength for StreamingValueChange {
-    type Meta = usize;
-    // type WriteData<'a> = StreamingVCBits<impl Iterator<Item = Bit>>;
-    type ReadData<'a> = StreamingVCBits<BitIter<'a>>;
-
+impl<T: WriteBits> WriteData<StreamingValueChange> for StreamingVCBits<T> {
     #[inline]
-    fn max_length(bits: &usize) -> usize {
-        <u64 as VariableLength>::max_length(&()) * 3 + ((*bits + 8 - 1) / 8)
+    fn max_size(bits: usize) -> usize {
+        <u64 as WriteData>::max_size(()) * 3 + ((bits + 8 - 1) / 8)
     }
 
-    #[inline]
-    fn write_bytes(mut data: impl WriteData<Self>, bits: &usize, b: &mut [u8]) -> usize {
-        data.write_bytes(bits, b)
+    fn write_bytes(&mut self, bits: usize, mut b: &mut [u8]) -> usize {
+        let mut header = self.var_id.write_bytes((), &mut b);
+        header += self.offset_to_prev.write_bytes((), &mut b[header..]);
+        header += self.timestamp_delta_index.write_bytes((), &mut b[header..]);
+
+        let bytes = (bits + 8 - 1) / 8;
+
+        // for byte in b[header..header + bytes].iter_mut() {
+        //     for (i, bit) in (&mut self.bits).take(4).enumerate() {
+        //         let raw_bit = match bit {
+        //             Bit::X => 0b00,
+        //             Bit::Z => 0b01,
+        //             Bit::Zero => 0b10,
+        //             Bit::One => 0b11,
+        //         };
+
+        //         *byte |= raw_bit << (i * 2);
+        //     }
+        // }
+        self.bits.write_bits(&mut b[header..header + bytes]);
+
+        header + bytes
     }
+}
+impl<'a> ReadData<'a, StreamingValueChange> for StreamingVCBits<BitIter<'a>> {
+    fn read_data(bits: usize, b: &'a [u8]) -> (Self, usize) {
+        let (var_id, mut offset) = VarId::read_data((), b);
+        let (offset_to_prev, size) = u64::read_data((), &b[offset..]);
+        offset += size;
+        let (timestamp_delta_index, size) = u64::read_data((), &b[offset..]);
+        offset += size;
 
-    #[inline]
-    fn from_bytes<'a>(bits: &usize, b: &mut &'a [u8]) -> StreamingVCBits<BitIter<'a>> {
-        let var_id = <VarId as VariableLength>::from_bytes(&(), b);
-        let offset_to_prev = <u64 as VariableLength>::from_bytes(&(), b);
-        let timestamp_delta_index = <u64 as VariableLength>::from_bytes(&(), b);
-        let bytes = ((*bits * 2) + 8 - 1) / 8;
+        let bytes = ((bits * 2) + 8 - 1) / 8;
 
-        StreamingVCBits {
+        let data = StreamingVCBits {
             var_id,
             offset_to_prev,
             timestamp_delta_index,
-            bits: BitIter::new(*bits, &b[..bytes]),
-        }
+            bits: BitIter::new(bits, &b[offset..offset + bytes]),
+        };
+
+        (data, offset + bytes)
     }
+}
+
+impl VariableLength for StreamingValueChange {
+    type Meta = usize;
+    type DefaultReadData = ();
+
+    // #[inline]
+    // fn from_bytes<'a, Data: ReadData<Self>>(bits: usize, b: &'a [u8]) -> (Data, usize) {
+    //     let (var_id, mut offset) = <VarId as VariableLength>::from_bytes((), b);
+    //     let (offset_to_prev, size) = <u64 as VariableLength>::from_bytes((), &b[offset..]);
+    //     offset += size;
+    //     let (timestamp_delta_index, size) = <u64 as VariableLength>::from_bytes((), &b[offset..]);
+    //     offset += size;
+
+    //     let bytes = ((bits * 2) + 8 - 1) / 8;
+
+    //     let data = StreamingVCBits {
+    //         var_id,
+    //         offset_to_prev,
+    //         timestamp_delta_index,
+    //         bits: BitIter::new(bits, &b[offset..offset + bytes]),
+    //     };
+
+    //     (data, offset + bytes)
+    // }
 }
 
 /// The variable id is the index of this in the `var_data` structure.
@@ -352,6 +394,7 @@ impl VariableLength for StreamingValueChange {
 #[repr(C)]
 pub struct StreamingVarMeta {
     var_id: VarId,
+    bits: u32,
     last_value_change_offset: u64,
     number_of_value_changes: u64,
 }
@@ -376,12 +419,12 @@ impl StreamingDb {
     pub fn load_vcd<R: Read>(parser: &mut Parser<R>) -> io::Result<Self> {
         let header = parser.parse_header()?;
 
-        let (tree, vars) = find_all_scopes_and_variables(header);
+        let var_tree = find_all_scopes_and_variables(header);
 
-        let mut var_data = unsafe { MmapVec::create_with_capacity(vars.len())? };
+        let mut var_data = unsafe { MmapVec::create_with_capacity(var_tree.variables.len())? };
 
         let mut previous = 0;
-        for var_id in vars {
+        for (&var_id, var_info) in &var_tree.variables {
             while previous + 1 < var_id.get() {
                 // Not contiguous, lets pad until it is.
                 var_data.push(None);
@@ -391,6 +434,7 @@ impl StreamingDb {
 
             var_data.push(Some(StreamingVarMeta {
                 var_id,
+                bits: var_info.bits,
                 last_value_change_offset: 0,
                 number_of_value_changes: 0,
             }));
@@ -410,7 +454,7 @@ impl StreamingDb {
             let command = command?;
             match command {
                 Command::Timestamp(timestamp) => {
-                    timestamp_chain.push(&(), timestamp - last_timestamp);
+                    timestamp_chain.push((), timestamp - last_timestamp);
                     last_timestamp = timestamp;
                     timestamp_counter += 1;
                 }
@@ -418,23 +462,25 @@ impl StreamingDb {
                     let var_id: VarId = code.number().try_into().unwrap();
                     let var_data = &mut var_data[var_id.get() as usize].unwrap();
 
-                    var_data.last_value_change_offset = value_change.push(&values.len(), StreamingVCBits {
+                    var_data.last_value_change_offset = value_change.push(values.len(), StreamingVCBits {
                         var_id,
                         offset_to_prev: value_change.current_offset() - var_data.last_value_change_offset,
                         timestamp_delta_index: timestamp_counter - 1,
                         bits: values.into_iter().map(Into::into)
                     });
+                    var_data.number_of_value_changes += 1;
                 }
                 Command::ChangeScalar(code, value) => {
                     let var_id: VarId = code.number().try_into().unwrap();
                     let var_data = &mut var_data[var_id.get() as usize].unwrap();
 
-                    var_data.last_value_change_offset = value_change.push(&1, StreamingVCBits {
+                    var_data.last_value_change_offset = value_change.push(1, StreamingVCBits {
                         var_id,
                         offset_to_prev: value_change.current_offset() - var_data.last_value_change_offset,
                         timestamp_delta_index: timestamp_counter - 1,
                         bits: Some(value.into()).into_iter(),
                     });
+                    var_data.number_of_value_changes += 1;
                 }
                 _ => {},
             }
@@ -446,4 +492,126 @@ impl StreamingDb {
             value_change,
         })
     }
+}
+
+const NODE_CHILDREN: usize = 8;
+
+/// While this is variable size (through the `VariableLength` trait),
+/// each node for a given variable is the same size.
+#[derive(Debug)]
+struct Node<T: WriteBits> {
+    /// Offsets (from offset of beginning of the tree this node is in) of this node's children.
+    children: [u32; NODE_CHILDREN],
+    averaged_bits: T,
+}
+
+enum NodeProxy {}
+
+impl<T: WriteBits> WriteData<NodeProxy> for Node<T> {
+    fn max_size(bits: usize) -> usize {
+        let bytes = (bits + 8 - 1) / 8;
+        mem::size_of::<[u32; NODE_CHILDREN]>() + bytes
+    }
+
+    fn write_bytes(&mut self, bits: usize, b: &mut [u8]) -> usize {
+        let total_size = Self::max_size(bits);
+        let children_size = mem::size_of::<[u32; NODE_CHILDREN]>();
+        
+        b[..children_size]
+            .copy_from_slice(unsafe {
+                slice::from_raw_parts(self.children.as_ptr() as *const u8, self.children.len() * mem::size_of::<u32>())
+            });
+
+        self.averaged_bits.write_bits(&mut b[children_size..total_size]);
+        
+        total_size
+    }
+}
+impl<'a> ReadData<'a, NodeProxy> for Node<BitIter<'a>> {
+    fn read_data(bits: usize, b: &'a [u8]) -> (Self, usize) {
+        let total_size = Self::max_size(bits);
+        let children_size = mem::size_of::<[u32; NODE_CHILDREN]>();
+
+        let children = unsafe { *(b[children_size..].as_ptr() as *const [u32; NODE_CHILDREN]) };
+
+        let node = Node {
+            children,
+            averaged_bits: BitIter::new(bits, &b[children_size..total_size])
+        };
+
+        (node, total_size)
+    }
+}
+
+// struct JustBits<T: WriteBits>(T);
+impl<T: WriteBits> WriteData<NodeProxy> for T {
+    fn max_size(bits: usize) -> usize {
+        (bits + 8 - 1) / 8
+    }
+
+    fn write_bytes(&mut self, bits: usize, b: &mut [u8]) -> usize {
+        let bytes = (bits + 8 - 1) / 8;
+
+        self.write_bits(&mut b[..bytes]);
+
+        bytes
+    }
+}
+impl<'a> ReadData<'a, NodeProxy> for BitIter<'a> {
+    fn read_data(bits: usize, b: &'a [u8]) -> (Self, usize) {
+        let bytes = Self::max_size(bits);
+        (BitIter::new(bits, &b[..bytes]), bytes)
+    }
+}
+
+impl VariableLength for NodeProxy {
+    type Meta = usize;
+    type DefaultReadData = ();
+
+    // fn from_bytes<'a>(bits: usize, b: &'a [u8]) -> (Node<BitIter<'a>>, usize) {
+    //     let total_size = Self::max_size(bits);
+    //     let children_size = mem::size_of::<[u32; NODE_CHILDREN]>();
+
+    //     let children = unsafe { *(b[children_size..].as_ptr() as *const [u32; NODE_CHILDREN]) };
+
+    //     let node = Node {
+    //         children,
+    //         averaged_bits: BitIter::new(bits, &b[children_size..total_size])
+    //     };
+
+    //     (node, total_size)
+    // }
+}
+
+/// Converts the number of value changes to the number of layers in the tree.
+fn value_changes_to_layers(count: usize) -> usize {
+    todo!()
+}
+
+/// This contains a list of variably-sized structures that are structurally similar
+/// to a tree, each one corresponding to variable.
+/// Each layer is made up of nodes and each tree looks like the following:
+/// | up-to 128 top-level nodes |
+///       / / /   |   \ \ \
+///              ...
+/// `value_changes_to_layers() - 2` layers
+///              ...
+/// | a final layer of nodes corresponding to the actual values (only bit iterators are written in this layer) | 
+struct FrustumTree {
+    /// Contains a map of variable ids to offsets in the tree structure.
+    offsets: HashMap<VarId, u64>,
+    trees: VarMmapVec<NodeProxy>,
+}
+
+impl FrustumTree {
+    pub fn generate(streaming_db: StreamingDb) -> Self {
+
+
+        todo!()
+    }
+}
+
+pub struct QueryDb {
+    
+    // frustum_tree: 
 }
