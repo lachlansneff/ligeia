@@ -134,8 +134,8 @@ impl<T: VariableLength> VarMmapVec<T> {
         self.count = unsafe { &mut *(self.mapping.as_ptr() as *mut u64) };
     }
 
-    pub fn iter<Data>(&self) -> MmapVecIter<T, Data> {
-        MmapVecIter {
+    pub fn iter<Data>(&self) -> VarVecIter<T, Data> {
+        VarVecIter {
             bytes: &self.mapping[16..],
             count: *self.count,
             _marker: PhantomData,
@@ -146,20 +146,24 @@ impl<T: VariableLength> VarMmapVec<T> {
         self.mapping.flush().expect("failed to flush mapping");
     }
 
-    // /// This will return garbage if the offset is not aligned to the beginning
-    // /// of a variable-length item.
-    // pub fn get_at_offset(&self, offset: usize) -> T {
-    //     T::from_bytes(&mut &self.mapping[offset..])
-    // }
+    /// This will return garbage if the offset is not aligned to the beginning
+    /// of a variable-length item.
+    pub fn get_at<'a, Data>(&'a self, meta: T::Meta, offset: u64) -> Data
+    where
+        Data: ReadData<'a, T>
+    {
+        // T::from_bytes(&mut &self.mapping[offset..])
+        Data::read_data(meta, &self.mapping[offset as usize..]).0
+    }
 }
 
-pub struct MmapVecIter<'a, T: VariableLength, Data = <T as VariableLength>::DefaultReadData> {
+pub struct VarVecIter<'a, T: VariableLength, Data = <T as VariableLength>::DefaultReadData> {
     bytes: &'a [u8],
     count: u64,
     _marker: PhantomData<(T, Data)>,
 }
 
-impl<'a, T: VariableLength, Data: ReadData<'a, T>> MmapVecIter<'a, T, Data> {
+impl<'a, T: VariableLength, Data: ReadData<'a, T>> VarVecIter<'a, T, Data> {
     pub fn next_data(&mut self, meta: T::Meta) -> Option<Data> {
         if self.count > 0 {
             self.count -= 1;

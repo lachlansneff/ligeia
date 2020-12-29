@@ -2,7 +2,7 @@
 
 use std::{convert::TryFrom, fmt::Debug, fmt::{Display, Formatter}, fs::File, io, num::NonZeroU64, path::PathBuf, convert::TryInto};
 
-use db::{Bit, BitIter, StreamingDb, StreamingVCBits, VarId};
+use db::{Qit, QitIter, StreamingDb, StreamingVCBits, VarId};
 use io::BufReader;
 use structopt::StructOpt;
 use vcd::{self, ScopeItem, Value, TimescaleUnit, SimulationCommand};
@@ -37,6 +37,17 @@ fn main() -> io::Result<()> {
     let mut parser = vcd::Parser::new(&map[..]);
 
     let streaming_db = StreamingDb::load_vcd(&mut parser)?;
+
+    println!("contains {} variables", streaming_db.var_tree().variables.len());
+
+    let (&example_var_id, var_info) = streaming_db.var_tree().variables.iter().nth(10).unwrap();
+
+    let mut reverse_value_changes = streaming_db.iter_reverse_value_change(example_var_id);
+
+    println!("variable \"{}\" ({}) has {} value changes", var_info.name, example_var_id, reverse_value_changes.len());
+    println!("last value change: {:?}", reverse_value_changes.next().unwrap());
+    println!("second to last value change: {:?}", reverse_value_changes.next().unwrap());
+    println!("third to last value change: {:?}", reverse_value_changes.next().unwrap());
 
     // let header = parser.parse_header()?;
 

@@ -13,10 +13,14 @@ lto = "fat"
 [dependencies]
 structopt = "0.3"
 # wgpu = "0.6"
-vcd = { git = "https://github.com/lachlansneff/rust-vcd.git" }
+# vcd = { git = "https://github.com/lachlansneff/rust-vcd.git" }
 mapr = "0.8.0"
 # leb128 = "0.2.4"
 varint-simd = "0.1.1"
 tempfile = "3.1.0"
 # winit = "0.23.0"
-futures = "0.3.8"
+# futures = "0.3.8"
+
+[dependencies.vcd]
+# git = "https://github.com/lachlansneff/rust-vcd.git"
+path = "../rust-vcd"
