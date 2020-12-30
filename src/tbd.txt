@@ -61,14 +61,6 @@ scope :=
     scope-id := u32
     name := string
 
-declaration :=
-    type := u32 ∈ { SCOPE := 0, VARIABLE := 1, STORAGE := 2 }
-    item := {
-        scope, if *type* = SCOPE
-        variable, if *type* = VARIABLE
-        storage, if *type* = STORAGE
-    }
-
 value-change :=
     storage-id := varu32
     value := {
@@ -78,8 +70,12 @@ value-change :=
     }
 
 block :=
-    type := u8 ∈ { VALUE_CHANGE := 0, TIMESTEP := 1 }
+    type := u8 ∈ { SCOPE := 0, VARIABLE := 1, STORAGE := 2, VALUE_CHANGE := 3, TIMESTEP := 4 }
     {
+        scope, if *type* = SCOPE
+        variable, if *type* = VARIABLE
+        storage, if *type* = STORAGE
+
         value-changes := compact-vec(value-change), if *type* = VALUE_CHANGE
 
         // timesteps since previous timestep block
@@ -97,6 +93,5 @@ not-yet-named :=
 
 rev-1 :=
     timescale := u32, femtoseconds per timestep
-    declarations := vec(declaration)
     blocks := unsized-vec(block)
 
