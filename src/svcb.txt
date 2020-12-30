@@ -1,4 +1,6 @@
 
+# Rev 1 of the Streamed Value Change Blocks (SVCB) file format.
+
 # Types used in the file format
 
 u1 := a single bit, stored as compactly as possible
@@ -84,8 +86,8 @@ block :=
 
 # The file format
 
-not-yet-named :=
-    magic := u64, not yet specified
+svcb :=
+    magic := u32, must be 'svcb'
     version := u32 ∈ { 1 }
     contents := {
         rev-1, if *version* = 1
