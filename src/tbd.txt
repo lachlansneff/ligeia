@@ -1,0 +1,88 @@
+
+# Types used in the file format
+
+u1 := a single bit, stored as compactly as possible
+u2 := 2 bits, stored as compactly as possible
+u32 := 32 bit unsigned integer, little endian
+u64 := 64 bit unsigned integer, little endian
+varu32 := varuint, maximum of u32::MAX
+varu64 := varuint, maximum of u64::MAX,
+
+bit := u1 ∈ { 0, 1 }
+qit := u2 ∈ { 0, 1, x := 2, z := 3 }
+
+unsized-vec(T) :=
+    sequence of T
+
+vec(T) :=
+    length := u32
+    sequence of T, *length* items long
+
+compact-vec(T) :=
+    length := varu32
+    sequence of T, *length* items long
+
+string := vec(utf-8 encoded character)
+
+storage :=
+    id := u32
+    type := u32 ∈ { BINARY := 0, QUATERNARY := 1, UTF-8 := 2 }
+    length := u32
+
+integer-variable-data :=
+    msb := u32, most significant bit index
+    lsb := u32, least significant bit index
+    signedness := u32 ∈ { SIGNED_TWOS_COMPLEMENT := 0, UNSIGNED_TWOS_COMPLEMENT := 1 }
+    {
+        storage-ids := vec(u32), if *interpretation* = INTEGER_MULTISTORAGE
+    }
+
+enum-specification :=
+    name := string
+    value := {
+        unsized-vec(bit), if *storages[storage-id].type* = BINARY
+        unsized-vec(qit), if *storages[storage-id].type* = QUATERNARY
+    }
+
+variable :=
+    name := string
+    storage-id := u32
+    interpretation := u32 ∈ { NONE := 0, INTEGER := 1, INTEGER_MULTISTORAGE := 2, UTF-8 := 3, ENUM := 4 }
+    interpretation-data := {
+        integer-variable-data, if *interpretation* ∈ { INTEGER, INTEGER_MULTISTORAGE }
+        enum-variable-data := vec(enum-specification), if *interpretation* = ENUM
+    }
+
+scope :=
+    name := string
+    variables := vec(variable)
+    inner-scopes := vec(scope)
+
+value-change :=
+    storage-id := varu32
+    value := {
+        unsized-vec(bit), if *storages[storage-id].type* = BINARY
+        unsized-vec(qit), if *storages[storage-id].type* = QUATERNARY
+        unsized-vec(utf-8 encoded character), if *storages[storage-id].type* = UTF-8
+    }
+
+value-change-block :=
+    timestep := varu64, timesteps since previous timestep assertion
+    value-changes := compact-vec(value-change)
+
+# The file format
+
+not-yet-named :=
+    magic := u64, not yet specified
+    version := u32 ∈ { 1 }
+    contents := {
+        rev-1, if *version* = 1
+    }
+
+rev-1 :=
+    timescale := u32, femtoseconds per timestep
+    storages := vec(storage)
+    scope-tree := vec(scope)
+
+    initial-values := vec(value-change)
+    value-change-blocks := unsized-vec(value-change-block)
