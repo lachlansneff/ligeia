@@ -33,8 +33,8 @@ storage :=
     }
 
 integer-variable-data :=
-    msb := u32, most significant bit index
-    lsb := u32, least significant bit index
+    msb := u32 // most significant bit index
+    lsb := u32 // least significant bit index
     signedness := u32 ∈ { SIGNED_TWOS_COMPLEMENT := 0, UNSIGNED_TWOS_COMPLEMENT := 1 }
 
 enum-specification :=
@@ -56,9 +56,18 @@ variable :=
     }
 
 scope :=
-    parent-scope-id := u32, 0 is the automatic top-level parent scope, must declare a scope before being its child
+    // 0 is the automatic top-level parent scope, must declare a scope before being its child
+    parent-scope-id := u32
     scope-id := u32
     name := string
+
+declaration :=
+    type := u32 ∈ { SCOPE := 0, VARIABLE := 1, STORAGE := 2 }
+    item := {
+        scope, if *type* = SCOPE
+        variable, if *type* = VARIABLE
+        storage, if *type* = STORAGE
+    }
 
 value-change :=
     storage-id := varu32
@@ -68,9 +77,14 @@ value-change :=
         unsized-vec(utf-8 encoded character), if *storages[storage-id].type* = UTF-8
     }
 
-value-change-block :=
-    timestep := varu64, timesteps since previous timestep assertion
-    value-changes := compact-vec(value-change)
+block :=
+    type := u8 ∈ { VALUE_CHANGE := 0, TIMESTEP := 1 }
+    {
+        value-changes := compact-vec(value-change), if *type* = VALUE_CHANGE
+
+        // timesteps since previous timestep block
+        timestep := varu64, if *type* = TIMESTEP
+    }
 
 # The file format
 
@@ -83,8 +97,6 @@ not-yet-named :=
 
 rev-1 :=
     timescale := u32, femtoseconds per timestep
-    storages := vec(storage)
-    scopes := vec(scope)
-    variables := vec(variable)
-    value-change-blocks := unsized-vec(value-change-block)
+    declarations := vec(declaration)
+    blocks := unsized-vec(block)
 
