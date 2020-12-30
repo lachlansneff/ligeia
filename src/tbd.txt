@@ -43,6 +43,7 @@ enum-specification :=
     value := unsized-vec(bit)
 
 variable :=
+    scope-id := u32
     name := string
     interpretation := u32 ∈ { NONE := 0, INTEGER := 1, ENUM := 2, UTF-8 := 3 }
     {
@@ -55,9 +56,9 @@ variable :=
     }
 
 scope :=
+    parent-scope-id := u32, 0 is the automatic top-level parent scope, must declare a scope before being its child
+    scope-id := u32
     name := string
-    variables := vec(variable)
-    inner-scopes := vec(scope)
 
 value-change :=
     storage-id := varu32
@@ -83,7 +84,7 @@ not-yet-named :=
 rev-1 :=
     timescale := u32, femtoseconds per timestep
     storages := vec(storage)
-    scope-tree := vec(scope)
-
-    initial-values := vec(value-change)
+    scopes := vec(scope)
+    variables := vec(variable)
     value-change-blocks := unsized-vec(value-change-block)
+
