@@ -24,7 +24,7 @@ compact-vec(T) :=
     length := varu32
     sequence of T, *length* items long
 
-string := vec(utf-8 encoded character)
+string := vec(utf-8 encoded byte)
 
 storage :=
     id := u32
