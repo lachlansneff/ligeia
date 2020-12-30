@@ -28,28 +28,29 @@ storage :=
     id := u32
     type := u32 ∈ { BINARY := 0, QUATERNARY := 1, UTF-8 := 2 }
     length := u32
+    {
+        lsb := u32, if *type* ∈ { BINARY, QUATERNARY }
+    }
 
 integer-variable-data :=
     msb := u32, most significant bit index
     lsb := u32, least significant bit index
     signedness := u32 ∈ { SIGNED_TWOS_COMPLEMENT := 0, UNSIGNED_TWOS_COMPLEMENT := 1 }
-    {
-        storage-ids := vec(u32), if *interpretation* = INTEGER_MULTISTORAGE
-    }
 
 enum-specification :=
+    assert(*storages[storage-id].type* = BINARY)
     name := string
-    value := {
-        unsized-vec(bit), if *storages[storage-id].type* = BINARY
-        unsized-vec(qit), if *storages[storage-id].type* = QUATERNARY
-    }
+    value := unsized-vec(bit)
 
 variable :=
     name := string
-    storage-id := u32
-    interpretation := u32 ∈ { NONE := 0, INTEGER := 1, INTEGER_MULTISTORAGE := 2, UTF-8 := 3, ENUM := 4 }
+    interpretation := u32 ∈ { NONE := 0, INTEGER := 1, ENUM := 2, UTF-8 := 3 }
+    {
+        storage-id := u32, if *interpretation* ∈ { NONE, ENUM, UTF-8 }
+        storage-ids := vec(u32), if *interpretation* = INTEGER
+    }
     interpretation-data := {
-        integer-variable-data, if *interpretation* ∈ { INTEGER, INTEGER_MULTISTORAGE }
+        integer-variable-data, if *interpretation* = INTEGER
         enum-variable-data := vec(enum-specification), if *interpretation* = ENUM
     }
 
