@@ -1,7 +1,10 @@
 use std::{collections::{BTreeMap, HashMap}, convert::{TryFrom, TryInto}, fmt::{Debug, Display, Formatter}, io::{self, Read}, mem, num::NonZeroU64, slice, sync::{Arc, Mutex}, time::Instant};
 use vcd::{Command, Parser, ScopeItem, Value};
 
-use crate::mmap_vec::{MmapVec, Pod, ReadData, VarMmapVec, VarVecIter, VariableLength, WriteData};
+use crate::{
+    mmap_vec::{MmapVec, Pod, ReadData, VarMmapVec, VariableLength, WriteData},
+    types::{Qit, QitSlice},
+};
 
 pub struct NotValidVarIdError(());
 
@@ -141,9 +144,9 @@ impl WriteData for u64 {
         10
     }
 
-    fn write_bytes(&mut self, _: (), b: &mut [u8]) -> usize {
+    fn write_bytes(self, _: (), b: &mut [u8]) -> usize {
         // leb128::write::unsigned(&mut b, *self).unwrap()
-        varint_simd::encode_to_slice(*self, b) as usize
+        varint_simd::encode_to_slice(self, b) as usize
     }
 }
 impl ReadData<'_> for u64 {
@@ -165,7 +168,7 @@ impl WriteData for VarId {
         10
     }
 
-    fn write_bytes(&mut self, _: (), b: &mut [u8]) -> usize {
+    fn write_bytes(self, _: (), b: &mut [u8]) -> usize {
         // leb128::write::unsigned(&mut b, self.0.get()).unwrap()
         varint_simd::encode_to_slice(self.0.get(), b) as usize
     }
@@ -182,14 +185,6 @@ impl VariableLength for VarId {
     type DefaultReadData = Self;
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Qit {
-    X,
-    Z,
-    Zero,
-    One,
-}
-
 impl From<Value> for Qit {
     fn from(v: Value) -> Self {
         match v {
@@ -201,79 +196,16 @@ impl From<Value> for Qit {
     }
 }
 
-#[derive(Copy, Clone)]
-pub struct QitIter<'a> {
-    qits: u32,
-    index: u32,
-    data: &'a [u8],
+pub trait WriteQits: IntoIterator<Item = Qit> {
+    fn write_qits(self, bytes: &mut [u8]);
 }
 
-impl<'a> QitIter<'a> {
-    pub fn new(qits: u32, data: &'a [u8]) -> Self {
-        Self {
-            qits,
-            index: 0,
-            data,
-        }
-    }
-
-    pub fn num_qits(&self) -> u32 {
-        self.qits
-    }
-}
-
-impl<'a> Iterator for QitIter<'a> {
-    type Item = Qit;
-    fn next(&mut self) -> Option<Qit> {
-        if self.index < self.qits {
-            let byte = self.data[(self.index as usize) / 8];
-            let in_index = (self.index * 2) % 8;
-            let bit = (byte & (0b11 << in_index)) >> in_index;
-            self.index += 1;
-
-            Some(match bit {
-                0b00 => Qit::X,
-                0b01 => Qit::Z,
-                0b10 => Qit::Zero,
-                0b11 => Qit::One,
-                _ => unreachable!(),
-            })
-        } else {
-            None
-        }
-    }
-}
-
-impl Display for QitIter<'_> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        for qit in *self {
-            match qit {
-                Qit::X => write!(f, "x")?,
-                Qit::Z => write!(f, "z")?,
-                Qit::Zero => write!(f, "0")?,
-                Qit::One => write!(f, "1")?,
-            }
-        }
-
-        Ok(())
-    }
-}
-
-impl Debug for QitIter<'_> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "0q{}", self)
-    }
-}
-
-pub trait WriteQits: Iterator<Item = Qit> {
-    fn write_qits(&mut self, bytes: &mut [u8]);
-}
-
-impl<T: Iterator<Item = Qit>> WriteQits for T {
+impl<T: IntoIterator<Item = Qit>> WriteQits for T {
     #[inline]
-    fn write_qits(&mut self, bytes: &mut [u8]) {
+    fn write_qits(self, bytes: &mut [u8]) {
+        let mut iter = self.into_iter();
         for byte in bytes.iter_mut() {
-            for (i, qit) in self.take(4).enumerate() {
+            for (i, qit) in (&mut iter).take(4).enumerate() {
                 let raw_qit = match qit {
                     Qit::X => 0b00,
                     Qit::Z => 0b01,
@@ -299,39 +231,37 @@ pub struct StreamingVCBits<T: WriteQits> {
 
 impl<T: WriteQits> WriteData<StreamingValueChange> for StreamingVCBits<T> {
     #[inline]
-    fn max_size(qits: u32) -> usize {
-        <u64 as WriteData>::max_size(()) * 3 + ((qits as usize + 4 - 1) / 4)
+    fn max_size(qits: usize) -> usize {
+        <u64 as WriteData>::max_size(()) * 3 + Qit::bits_to_bytes(qits)
     }
 
-    fn write_bytes(&mut self, qits: u32, mut b: &mut [u8]) -> usize {
+    fn write_bytes(self, qits: usize, mut b: &mut [u8]) -> usize {
         let mut header = self.var_id.write_bytes((), &mut b);
         header += self.offset_to_prev.write_bytes((), &mut b[header..]);
         header += self.offset_to_prev_timestamp.write_bytes((), &mut b[header..]);
 
-        // let bytes = (bits as usize + 8 - 1) / 8;
-        let bytes = (qits as usize + 4 - 1) / 4;
+        let bytes = Qit::bits_to_bytes(qits);
 
         self.qits.write_qits(&mut b[header..header + bytes]);
 
         header + bytes
     }
 }
-impl<'a> ReadData<'a, StreamingValueChange> for StreamingVCBits<QitIter<'a>> {
-    fn read_data(qits: u32, b: &'a [u8]) -> (Self, usize) {
+impl<'a> ReadData<'a, StreamingValueChange> for StreamingVCBits<QitSlice<'a>> {
+    fn read_data(qits: usize, b: &'a [u8]) -> (Self, usize) {
         let (var_id, mut offset) = VarId::read_data((), b);
         let (offset_to_prev, size) = u64::read_data((), &b[offset..]);
         offset += size;
         let (offset_to_prev_timestamp, size) = u64::read_data((), &b[offset..]);
         offset += size;
 
-        // let bytes = ((bits as usize * 2) + 8 - 1) / 8;
-        let bytes = (qits as usize + 4 - 1) / 4;
+        let bytes = Qit::bits_to_bytes(qits);
 
         let data = StreamingVCBits {
             var_id,
             offset_to_prev,
             offset_to_prev_timestamp,
-            qits: QitIter::new(qits, &b[offset..offset + bytes]),
+            qits: QitSlice::new(qits, &b[offset..offset + bytes]),
         };
 
         (data, offset + bytes)
@@ -339,7 +269,7 @@ impl<'a> ReadData<'a, StreamingValueChange> for StreamingVCBits<QitIter<'a>> {
 }
 
 impl VariableLength for StreamingValueChange {
-    type Meta = u32;
+    type Meta = usize;
     type DefaultReadData = ();
 }
 
@@ -425,7 +355,7 @@ impl StreamingDb {
                     let var_id: VarId = code.number().try_into().unwrap();
                     let var_meta = var_metas[var_id.get() as usize].as_mut().unwrap();
 
-                    var_meta.last_value_change_offset = value_change.push(values.len() as u32, StreamingVCBits {
+                    var_meta.last_value_change_offset = value_change.push(values.len(), StreamingVCBits {
                         var_id,
                         offset_to_prev: value_change.current_offset() - var_meta.last_value_change_offset,
                         offset_to_prev_timestamp: timestamp_offset - var_meta.last_timestamp_offset,
@@ -485,7 +415,7 @@ impl StreamingDb {
             current_timestamp_offset: var_meta.last_timestamp_offset,
             current_value_change_offset: var_meta.last_value_change_offset,
             remaining: var_meta.number_of_value_changes,
-            qits: var_meta.qits,
+            qits: var_meta.qits as usize,
         }
     }
 }
@@ -498,14 +428,14 @@ pub struct ReverseValueChangeIter<'a> {
     current_timestamp_offset: u64,
     current_value_change_offset: u64,
     remaining: u64,
-    qits: u32,
+    qits: usize,
 }
 
 impl<'a> Iterator for ReverseValueChangeIter<'a> {
     /// (timestamp, qits)
-    type Item = (u64, QitIter<'a>);
+    type Item = (u64, QitSlice<'a>);
 
-    fn next(&mut self) -> Option<(u64, QitIter<'a>)> {
+    fn next(&mut self) -> Option<(u64, QitSlice<'a>)> {
         if self.remaining == 0 {
             return None;
         }
@@ -515,7 +445,7 @@ impl<'a> Iterator for ReverseValueChangeIter<'a> {
         let timestamp = self.current_timestamp;
         self.current_timestamp -= timestamp_delta;
 
-        let value_change: StreamingVCBits<QitIter<'a>> = self.value_changes.get_at(self.qits, self.current_value_change_offset);
+        let value_change: StreamingVCBits<QitSlice<'a>> = self.value_changes.get_at(self.qits, self.current_value_change_offset);
 
         self.current_value_change_offset -= value_change.offset_to_prev;
         self.current_timestamp_offset -= value_change.offset_to_prev_timestamp;
@@ -544,12 +474,11 @@ struct Node<T: WriteQits> {
 enum NodeProxy {}
 
 impl<T: WriteQits> WriteData<NodeProxy> for Node<T> {
-    fn max_size(qits: u32) -> usize {
-        let bytes = (qits as usize + 4 - 1) / 4;
-        mem::size_of::<[u32; NODE_CHILDREN]>() + bytes
+    fn max_size(qits: usize) -> usize {
+        mem::size_of::<[u32; NODE_CHILDREN]>() + Qit::bits_to_bytes(qits)
     }
 
-    fn write_bytes(&mut self, qits: u32, b: &mut [u8]) -> usize {
+    fn write_bytes(self, qits: usize, b: &mut [u8]) -> usize {
         let total_size = Self::max_size(qits);
         let children_size = mem::size_of::<[u32; NODE_CHILDREN]>();
         
@@ -563,8 +492,8 @@ impl<T: WriteQits> WriteData<NodeProxy> for Node<T> {
         total_size
     }
 }
-impl<'a> ReadData<'a, NodeProxy> for Node<QitIter<'a>> {
-    fn read_data(qits: u32, b: &'a [u8]) -> (Self, usize) {
+impl<'a> ReadData<'a, NodeProxy> for Node<QitSlice<'a>> {
+    fn read_data(qits: usize, b: &'a [u8]) -> (Self, usize) {
         let total_size = Self::max_size(qits);
         let children_size = mem::size_of::<[u32; NODE_CHILDREN]>();
 
@@ -572,7 +501,7 @@ impl<'a> ReadData<'a, NodeProxy> for Node<QitIter<'a>> {
 
         let node = Node {
             children,
-            averaged_qits: QitIter::new(qits, &b[children_size..total_size])
+            averaged_qits: QitSlice::new(qits, &b[children_size..total_size])
         };
 
         (node, total_size)
@@ -581,11 +510,12 @@ impl<'a> ReadData<'a, NodeProxy> for Node<QitIter<'a>> {
 
 // struct JustBits<T: WriteBits>(T);
 impl<T: WriteQits> WriteData<NodeProxy> for T {
-    fn max_size(qits: u32) -> usize {
-        (qits as usize + 4 - 1) / 4
+    fn max_size(qits: usize) -> usize {
+        // (qits as usize + 4 - 1) / 4
+        Qit::bits_to_bytes(qits)
     }
 
-    fn write_bytes(&mut self, qits: u32, b: &mut [u8]) -> usize {
+    fn write_bytes(self, qits: usize, b: &mut [u8]) -> usize {
         let bytes = (qits as usize + 8 - 1) / 8;
 
         self.write_qits(&mut b[..bytes]);
@@ -593,15 +523,15 @@ impl<T: WriteQits> WriteData<NodeProxy> for T {
         bytes
     }
 }
-impl<'a> ReadData<'a, NodeProxy> for QitIter<'a> {
-    fn read_data(qits: u32, b: &'a [u8]) -> (Self, usize) {
+impl<'a> ReadData<'a, NodeProxy> for QitSlice<'a> {
+    fn read_data(qits: usize, b: &'a [u8]) -> (Self, usize) {
         let bytes = Self::max_size(qits);
-        (QitIter::new(qits, &b[..bytes]), bytes)
+        (QitSlice::new(qits, &b[..bytes]), bytes)
     }
 }
 
 impl VariableLength for NodeProxy {
-    type Meta = u32;
+    type Meta = usize;
     type DefaultReadData = ();
 }
 

@@ -1,11 +1,7 @@
-#![feature(generic_associated_types)]
-
 use std::{convert::TryFrom, fmt::Debug, fmt::{Display, Formatter}, fs::File, io, num::NonZeroU64, path::PathBuf, convert::TryInto};
 
-use db::{Qit, QitIter, StreamingDb, StreamingVCBits, VarId};
-use io::BufReader;
+use db::StreamingDb;
 use structopt::StructOpt;
-use vcd::{self, ScopeItem, Value, TimescaleUnit, SimulationCommand};
 // use winit::{
 //     event::{Event, WindowEvent},
 //     event_loop::{ControlFlow, EventLoop},
@@ -14,6 +10,9 @@ use vcd::{self, ScopeItem, Value, TimescaleUnit, SimulationCommand};
 
 mod db;
 mod mmap_vec;
+mod svcb;
+mod types;
+
 use mmap_vec::VarMmapVec;
 
 #[derive(Debug, StructOpt)]

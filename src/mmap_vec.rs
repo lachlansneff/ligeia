@@ -4,7 +4,7 @@ use mapr::{MmapOptions, MmapMut};
 pub trait WriteData<Parent: VariableLength = Self> {
     /// Maximum possible length (in bytes). Should be small.
     fn max_size(meta: <Parent as VariableLength>::Meta) -> usize;
-    fn write_bytes(&mut self, meta: <Parent as VariableLength>::Meta, b: &mut [u8]) -> usize;
+    fn write_bytes(self, meta: <Parent as VariableLength>::Meta, b: &mut [u8]) -> usize;
 }
 
 pub trait ReadData<'a, Parent: VariableLength = Self>: Sized {
@@ -199,7 +199,7 @@ impl<T: Pod> WriteData for ConstantLength<T> {
         mem::size_of::<T>()
     }
 
-    fn write_bytes(&mut self, _: (), b: &mut [u8]) -> usize {
+    fn write_bytes(self, _: (), b: &mut [u8]) -> usize {
         assert!(b.len() >= mem::size_of::<T>());
         unsafe { *(b.as_mut_ptr() as *mut T) = self.0 };
         mem::size_of::<T>()
