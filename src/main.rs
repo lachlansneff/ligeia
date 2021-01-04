@@ -1,6 +1,4 @@
 use std::{convert::TryFrom, fmt::Debug, fmt::{Display, Formatter}, fs::File, io, num::NonZeroU64, path::PathBuf, convert::TryInto};
-
-use db::StreamingDb;
 use structopt::StructOpt;
 // use winit::{
 //     event::{Event, WindowEvent},
@@ -12,8 +10,7 @@ mod db;
 mod mmap_vec;
 mod svcb;
 mod types;
-
-use mmap_vec::VarMmapVec;
+mod vcd;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "ligeia", about="A waveform display program.")]
@@ -31,22 +28,20 @@ fn main() -> io::Result<()> {
 
     // let mut parser = vcd::Parser::new(BufReader::with_capacity(1_000_000, &mut f));
 
-    let map = unsafe { mapr::Mmap::map(&f)? };
+    // let map = unsafe { mapr::Mmap::map(&f)? };
 
-    let mut parser = vcd::Parser::new(&map[..]);
+    // let streaming_db = StreamingDb::load_vcd(&mut map[..])?;
 
-    let streaming_db = StreamingDb::load_vcd(&mut parser)?;
+    // println!("contains {} variables", streaming_db.var_tree().variables.len());
 
-    println!("contains {} variables", streaming_db.var_tree().variables.len());
+    // let (&example_var_id, var_info) = streaming_db.var_tree().variables.iter().nth(10).unwrap();
 
-    let (&example_var_id, var_info) = streaming_db.var_tree().variables.iter().nth(10).unwrap();
+    // let mut reverse_value_changes = streaming_db.iter_reverse_value_change(example_var_id);
 
-    let mut reverse_value_changes = streaming_db.iter_reverse_value_change(example_var_id);
-
-    println!("variable \"{}\" ({}) has {} value changes", var_info.name, example_var_id, reverse_value_changes.len());
-    println!("last value change: {:?}", reverse_value_changes.next().unwrap());
-    println!("second to last value change: {:?}", reverse_value_changes.next().unwrap());
-    println!("third to last value change: {:?}", reverse_value_changes.next().unwrap());
+    // println!("variable \"{}\" ({}) has {} value changes", var_info.name, example_var_id, reverse_value_changes.len());
+    // println!("last value change: {:?}", reverse_value_changes.next().unwrap());
+    // println!("second to last value change: {:?}", reverse_value_changes.next().unwrap());
+    // println!("third to last value change: {:?}", reverse_value_changes.next().unwrap());
 
     // let header = parser.parse_header()?;
 

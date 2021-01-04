@@ -1,5 +1,15 @@
 use std::fmt::{Debug, Display, Formatter};
 
+pub trait SizeInBytes {
+    fn size_in_bytes(count: usize) -> usize;
+}
+
+impl SizeInBytes for &'_ [u8] {
+    fn size_in_bytes(count: usize) -> usize {
+        count
+    }
+}
+
 macro_rules! define_item_containers {
     ($slice_name:ident, $iter:ident, $vec_name:ident, $mask:literal, $item:ty, $bits_per_item:literal, $format_prefix:literal, [$(($item_variant:path, $bits:literal, $display:literal)),*]) => {
         #[derive(Copy, Clone, PartialEq, Eq)]
@@ -14,6 +24,18 @@ macro_rules! define_item_containers {
                     size,
                     data,
                 }
+            }
+        }
+
+        impl SizeInBytes for $slice_name<'_> {
+            fn size_in_bytes(count: usize) -> usize {
+                (count + (8 / $bits_per_item) - 1) / (8 / $bits_per_item)
+            }
+        }
+
+        impl<'a> AsRef<[u8]> for $slice_name<'a> {
+            fn as_ref(&self) -> &[u8] {
+                self.data
             }
         }
 

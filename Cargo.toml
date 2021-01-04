@@ -22,6 +22,7 @@ tempfile = "3.1.0"
 # futures = "0.3.8"
 # nom = "6.0"
 thiserror = "1.0"
+ahash = "0.6.2"
 
 [dependencies.vcd]
 git = "https://github.com/lachlansneff/rust-vcd.git"
