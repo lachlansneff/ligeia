@@ -12,6 +12,7 @@ lto = "fat"
 
 [dependencies]
 structopt = "0.3"
+clap = "*"
 # wgpu = "0.6"
 # vcd = { git = "https://github.com/lachlansneff/rust-vcd.git" }
 mapr = "0.8.0"
@@ -23,6 +24,7 @@ tempfile = "3.1.0"
 # nom = "6.0"
 thiserror = "1.0"
 ahash = "0.6.2"
+anyhow = "1.0"
 
 [dependencies.vcd]
 git = "https://github.com/lachlansneff/rust-vcd.git"

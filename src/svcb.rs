@@ -1,7 +1,8 @@
+use anyhow::anyhow;
 // use nom::{Err, IResult, bytes::streaming::take, combinator::map_res, error::{Error, ErrorKind}, number::streaming::le_u32};
 use thiserror::Error;
-use std::{collections::HashMap, convert::TryInto, io, num::NonZeroUsize, str, time::Instant};
-use crate::{mmap_vec::{VarMmapVec, VariableLength, WriteData}, types::{Bit, BitSlice, BitVec, Qit, QitSlice, SizeInBytes}};
+use std::{collections::HashMap, convert::TryInto, fs::File, io, num::NonZeroUsize, str, time::Instant};
+use crate::{db::WaveformLoader, mmap_vec::{VarMmapVec, VariableLength, WriteData}, types::{Bit, BitSlice, BitVec, Qit, QitSlice, SizeInBytes}};
 
 // type IResult<I, O> = Result<(I, O), Err<()>>;
 
@@ -31,9 +32,12 @@ pub enum Reason {
     InvalidBlockType,
 }
 
+#[derive(Error, Debug)]
 pub enum Error {
+    #[error("not all data is immediately available")]
     Incomplete(Option<NonZeroUsize>),
-    Failure(Reason),
+    #[error(transparent)]
+    Failure(#[from] Reason),
 }
 
 impl From<io::Error> for Error {
@@ -523,7 +527,6 @@ impl VariableLength for ValueChangeProxy {
 
 #[derive(Clone)]
 struct StorageMeta {
-    storage_id: u32,
     last_value_change_offset: u64,
     number_of_value_changes: u64,
     last_timestamp_offset: u64,
@@ -550,9 +553,9 @@ impl SvcbConverter {
     pub fn load_svcb(input: &[u8]) -> Result<Self, Error> {
         use crate::svcb::*;
 
-        impl StorageLookup for HashMap<u32, StorageDeclaration, ahash::RandomState> {
+        impl<'a> StorageLookup for HashMap<u32, (StorageMeta, StorageDeclaration), ahash::RandomState> {
             fn lookup(&self, storage_id: u32) -> Option<&StorageDeclaration> {
-                self.get(&storage_id)
+                self.get(&storage_id).map(|(_, declaration)| declaration)
             }
         }
 
@@ -561,7 +564,6 @@ impl SvcbConverter {
         let mut storages: HashMap<u32, (StorageMeta, StorageDeclaration), ahash::RandomState> = HashMap::default();
         let mut timestamp_chain = unsafe { VarMmapVec::create()? };
         let mut value_changes = unsafe { VarMmapVec::create()? };
-        let mut storage_declarations: HashMap<_, _, ahash::RandomState> = HashMap::default();
 
         let mut processed_commands_count = 0;
         let start = Instant::now();
@@ -584,7 +586,7 @@ impl SvcbConverter {
                 }
                 // Variable Declaration.
                 1 => {
-                    let (i, variable) = VariableDeclaration::parse_with(i, &storage_declarations)?;
+                    let (i, variable) = VariableDeclaration::parse_with(i, &storages)?;
                     println!("received variable declaration: {:#?}", variable);
 
                     processed_commands_count += 1;
@@ -592,8 +594,16 @@ impl SvcbConverter {
                 }
                 // Storage Declaration.
                 2 => {
-                    let (i, storage) = StorageDeclaration::parse(i)?;
-                    storage_declarations.insert(storage.id, storage)
+                    let (i, declaration) = StorageDeclaration::parse(i)?;
+                    storages.insert(declaration.id, (
+                        StorageMeta {
+                            last_value_change_offset: 0,
+                            number_of_value_changes: 0,
+                            last_timestamp_offset: 0,
+                            last_timestamp: 0,
+                        },
+                        declaration,
+                    ))
                         .ok_or(Error::Failure(Reason::DuplicatedStorageId))?;
                     
                     processed_commands_count += 1;
@@ -620,7 +630,7 @@ impl SvcbConverter {
                         storage.last_value_change_offset = match value_change {
                             ValueChange::Binary(bits) => {
                                 value_changes.push(declaration.length as _, ValueChangeData {
-                                    storage_id: storage.storage_id,
+                                    storage_id: declaration.id,
                                     offset_to_prev: value_changes.current_offset() - storage.last_value_change_offset,
                                     offset_to_prev_timestamp: timestep_offset - storage.last_timestamp_offset,
                                     storage: bits,
@@ -628,7 +638,7 @@ impl SvcbConverter {
                             },
                             ValueChange::Quaternary(qits) => {
                                 value_changes.push(declaration.length as _, ValueChangeData {
-                                    storage_id: storage.storage_id,
+                                    storage_id: declaration.id,
                                     offset_to_prev: value_changes.current_offset() - storage.last_value_change_offset,
                                     offset_to_prev_timestamp: timestep_offset - storage.last_timestamp_offset,
                                     storage: qits,
@@ -636,7 +646,7 @@ impl SvcbConverter {
                             }
                             ValueChange::Utf8(bytes) => {
                                 value_changes.push(declaration.length as _, ValueChangeData {
-                                    storage_id: storage.storage_id,
+                                    storage_id: declaration.id,
                                     offset_to_prev: value_changes.current_offset() - storage.last_value_change_offset,
                                     offset_to_prev_timestamp: timestep_offset - storage.last_timestamp_offset,
                                     storage: bytes,
@@ -660,8 +670,6 @@ impl SvcbConverter {
 
                     processed_commands_count += 1;
                     number_of_timestamps += 1;
-
-                    println!("received timestep: {}", timestep);
                     
                     i
                 }
@@ -670,6 +678,11 @@ impl SvcbConverter {
                 }
             }
         }        
+
+        let elapsed = start.elapsed();
+        println!("processed {} commands in {:.2} seconds", processed_commands_count, elapsed.as_secs_f32());
+        println!("contained {} timestamps", number_of_timestamps);
+        println!("accumulated timestamp: {}", timestamp_acc);
         
         Ok(Self {
             storages,
@@ -677,5 +690,44 @@ impl SvcbConverter {
             value_changes,
             // var_tree: todo!(),
         })
+    }
+}
+
+pub struct SvcbLoader {}
+
+impl SvcbLoader {
+    pub const fn new() -> Self {
+        Self {}
+    }
+}
+
+impl WaveformLoader for SvcbLoader {
+    fn supports_file_extension(&self, s: &str) -> bool {
+        matches!(s, "svcb")
+    }
+
+    fn description(&self) -> String {
+        "the Streamed Value Change Blocks (SVCB) loader".to_string()
+    }
+
+    fn load_file(&self, path: &std::path::Path) -> anyhow::Result<Box<dyn crate::db::WaveformDatabase>> {
+        let f = File::open(&path)?;
+        let map = unsafe { mapr::Mmap::map(&f) };
+        // let converter = SvcbConverter::load_svcb(&map[..]);
+
+        let converter = match map {
+            Ok(map) => SvcbConverter::load_svcb(&map[..])?,
+            Err(_) => {
+                println!("mmap failed, attempting to load file as a stream");
+                // Mmapping failed, let's try to load as a reader
+                todo!()
+            }
+        };
+
+        Err(anyhow!("not yet implemented"))
+    }
+
+    fn load_stream(&self, reader: Box<dyn io::Read>) -> anyhow::Result<Box<dyn crate::db::WaveformDatabase>> {
+        Err(anyhow!("loading from a stream is not yet implemented for SVCB"))
     }
 }

@@ -1,8 +1,10 @@
-use std::{collections::{BTreeMap, HashMap}, convert::{TryFrom, TryInto}, fmt::{Debug, Display, Formatter}, io::{self, Read}, num::NonZeroU64, time::Instant};
+use std::{collections::{BTreeMap, HashMap}, convert::{TryFrom, TryInto}, fmt::{Debug, Display, Formatter}, fs::File, io::{self, Read}, num::NonZeroU64, time::Instant};
 
+use anyhow::anyhow;
+use io::BufReader;
 use vcd::{Command, Parser, ScopeItem};
 
-use crate::{mmap_vec::{ReadData, VarMmapVec, VariableLength, WriteData}, types::{Qit, QitSlice}};
+use crate::{db::WaveformLoader, mmap_vec::{ReadData, VarMmapVec, VariableLength, WriteData}, types::{Qit, QitSlice}};
 
 struct NotValidVarIdError(());
 
@@ -180,10 +182,10 @@ impl<T: IntoIterator<Item = Qit>> WriteQits for T {
         for byte in bytes.iter_mut() {
             for (i, qit) in (&mut iter).take(4).enumerate() {
                 let raw_qit = match qit {
-                    Qit::X => 0b00,
-                    Qit::Z => 0b01,
-                    Qit::Zero => 0b10,
-                    Qit::One => 0b11,
+                    Qit::Zero => 0,
+                    Qit::One => 1,
+                    Qit::X => 2,
+                    Qit::Z => 3,
                 };
 
                 *byte |= raw_qit << (i * 2);
@@ -260,7 +262,7 @@ struct VarMeta {
 /// Used to efficiently convert from a vcd that's larger than memory
 /// to a structure that can be easily traversed in order to create a
 /// db that can be easily and quickly queried.
-pub struct VcdConverter {
+struct VcdConverter {
     // All storages.
     var_metas: HashMap<VarId, VarMeta, ahash::RandomState>,
 
@@ -273,7 +275,7 @@ pub struct VcdConverter {
 }
 
 impl VcdConverter {
-    pub fn load_vcd<R: Read>(reader: R) -> io::Result<Self> {
+    fn load_vcd<R: Read>(reader: R) -> io::Result<Self> {
         let mut parser = Parser::new(reader);
         let header = parser.parse_header()?;
 
@@ -416,5 +418,64 @@ impl<'a> Iterator for ReverseValueChangeIter<'a> {
 impl ExactSizeIterator for ReverseValueChangeIter<'_> {
     fn len(&self) -> usize {
         self.remaining as _
+    }
+}
+
+
+pub struct VcdLoader {}
+
+impl VcdLoader {
+    pub const fn new() -> Self {
+        Self {}
+    }
+}
+
+impl WaveformLoader for VcdLoader {
+    fn supports_file_extension(&self, s: &str) -> bool {
+        matches!(s, "vcd")
+    }
+
+    fn description(&self) -> String {
+        "the Value Change Dump (VCD) loader".to_string()
+    }
+
+    fn load_file(&self, path: &std::path::Path) -> anyhow::Result<Box<dyn crate::db::WaveformDatabase>> {
+        let f = File::open(&path)?;
+        let map = unsafe { mapr::Mmap::map(&f) };
+
+        // let converter = VcdConverter::load_vcd(&map[..])?;
+        let converter = match map {
+            Ok(map) => VcdConverter::load_vcd(&map[..])?,
+            Err(_) => {
+                println!("mmap failed, attempting to load file as a stream");
+                
+                // VcdConverter::load_vcd(BufReader::with_capacity(1_000_000, f))?
+                return self.load_stream(Box::new(f));
+            }
+        };
+
+        println!("contains {} variables", converter.var_tree.variables.len());
+        let (&example_var_id, var_info) = converter.var_tree.variables.iter().nth(4).unwrap();
+        let mut reverse_value_changes = converter.iter_reverse_value_change(example_var_id);
+        println!("variable \"{}\" ({}) has {} value changes", var_info.name, example_var_id, reverse_value_changes.len());
+        println!("last value change: {:?}", reverse_value_changes.next().unwrap());
+        println!("second to last value change: {:?}", reverse_value_changes.next().unwrap());
+        println!("third to last value change: {:?}", reverse_value_changes.next().unwrap());
+
+        Err(anyhow!("not yet implemented"))
+    }
+
+    fn load_stream(&self, reader: Box<dyn Read>) -> anyhow::Result<Box<dyn crate::db::WaveformDatabase>> {
+        let converter = VcdConverter::load_vcd(BufReader::with_capacity(1_000_000, reader))?;
+
+        println!("contains {} variables", converter.var_tree.variables.len());
+        let (&example_var_id, var_info) = converter.var_tree.variables.iter().nth(4).unwrap();
+        let mut reverse_value_changes = converter.iter_reverse_value_change(example_var_id);
+        println!("variable \"{}\" ({}) has {} value changes", var_info.name, example_var_id, reverse_value_changes.len());
+        println!("last value change: {:?}", reverse_value_changes.next().unwrap());
+        println!("second to last value change: {:?}", reverse_value_changes.next().unwrap());
+        println!("third to last value change: {:?}", reverse_value_changes.next().unwrap());
+
+        Err(anyhow!("not yet implemented"))
     }
 }

@@ -1,4 +1,4 @@
-use std::{collections::{BTreeMap, HashMap}, convert::{TryFrom, TryInto}, fmt::{Debug, Display, Formatter}, io::{self, Read}, mem, num::NonZeroU64, slice, sync::{Arc, Mutex}, time::Instant};
+use std::{collections::{BTreeMap, HashMap}, convert::{TryFrom, TryInto}, fmt::{Debug, Display, Formatter}, io::{self, Read}, mem, num::NonZeroU64, path::Path, slice, sync::{Arc, Mutex}, time::Instant};
 use svcb::{StorageDeclaration, Timestep, VariableDeclaration};
 
 use crate::{mmap_vec::{ReadData, VarMmapVec, VariableLength, WriteData}, svcb, types::{Qit, QitSlice}};
@@ -49,6 +49,20 @@ impl ReadData<'_> for u32 {
 impl VariableLength for u32 {
     type Meta = ();
     type DefaultReadData = Self;
+}
+
+pub trait WaveformDatabase: Send {
+
+}
+
+pub trait WaveformLoader: Sync {
+    fn supports_file_extension(&self, s: &str) -> bool;
+    fn description(&self) -> String;
+    
+    /// A file is technically a stream, but generally, specializing parsers for files can be more efficient than parsing
+    /// from a generic reader.
+    fn load_file(&self, path: &Path) -> anyhow::Result<Box<dyn WaveformDatabase>>;
+    fn load_stream(&self, reader: Box<dyn Read>) -> anyhow::Result<Box<dyn WaveformDatabase>>;
 }
 
 

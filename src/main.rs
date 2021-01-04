@@ -1,4 +1,7 @@
-use std::{convert::TryFrom, fmt::Debug, fmt::{Display, Formatter}, fs::File, io, num::NonZeroU64, path::PathBuf, convert::TryInto};
+use std::{fmt::Display, fs::File, path::{Path, PathBuf}, str::FromStr, sync::mpsc::sync_channel, thread};
+use anyhow::Context;
+use clap::arg_enum;
+use db::WaveformLoader;
 use structopt::StructOpt;
 // use winit::{
 //     event::{Event, WindowEvent},
@@ -18,146 +21,76 @@ struct Opt {
     /// Input file
     #[structopt(parse(from_os_str))]
     file: PathBuf,
+
+    /// File format
+    #[structopt(long = "format", possible_values = &FileFormat::variants(), case_insensitive = true)]
+    format: Option<FileFormat>,
 }
 
-fn main() -> io::Result<()> {
-    let opt: Opt = Opt::from_args();
-    println!("{:?}", opt);
+arg_enum! {
+    #[derive(Debug, PartialEq, Eq)]
+    enum FileFormat {
+        Vcd,
+        Svcb,
+    }
+}
 
-    let f = File::open(&opt.file)?;
+const LOADERS: &[(FileFormat, &'static dyn WaveformLoader)] = &[
+    (FileFormat::Vcd, &crate::vcd::VcdLoader::new()),
+    (FileFormat::Svcb, &crate::svcb::SvcbLoader::new()),
+];
 
-    // let mut parser = vcd::Parser::new(BufReader::with_capacity(1_000_000, &mut f));
+fn run(loader: &'static dyn WaveformLoader, path: PathBuf) -> anyhow::Result<()> {
+    let (tx, rx) = sync_channel(1);
 
-    // let map = unsafe { mapr::Mmap::map(&f)? };
+    let loader_thread = thread::spawn(move || {
+        tx.send(loader.load_file(&path)).expect("failed to send on channel");
+    });
 
-    // let streaming_db = StreamingDb::load_vcd(&mut map[..])?;
+    // Now that the loader is set up, start spinning up the ui.
 
-    // println!("contains {} variables", streaming_db.var_tree().variables.len());
+    let _vcdb = rx.recv().expect("failed to receive over channel")
+        .context("failed to load waveform")?;
 
-    // let (&example_var_id, var_info) = streaming_db.var_tree().variables.iter().nth(10).unwrap();
-
-    // let mut reverse_value_changes = streaming_db.iter_reverse_value_change(example_var_id);
-
-    // println!("variable \"{}\" ({}) has {} value changes", var_info.name, example_var_id, reverse_value_changes.len());
-    // println!("last value change: {:?}", reverse_value_changes.next().unwrap());
-    // println!("second to last value change: {:?}", reverse_value_changes.next().unwrap());
-    // println!("third to last value change: {:?}", reverse_value_changes.next().unwrap());
-
-    // let header = parser.parse_header()?;
-
-    // println!("{:#?}", header);
-
-    // let (tree, vars) = db::find_all_scopes_and_variables(header);
+    loader_thread.join().unwrap();
     
-
-
-    // for var_id in vars {
-    //     println!("{}", var_id);
-    // }
-
-    // let event_loop = EventLoop::new();
-    // let window = WindowBuilder::new().build(&event_loop).unwrap();
-
-    // let instance = wgpu::Instance::new(wgpu::BackendBit::PRIMARY);
-    // let surface = unsafe { instance.create_surface(&window) };
-
-    // let (device, queue) = futures::executor::block_on(async {
-    //     let adapter = instance
-    //         .request_adapter(&wgpu::RequestAdapterOptions {
-    //             power_preference: wgpu::PowerPreference::default(),
-    //             compatible_surface: Some(&surface),
-    //         })
-    //         .await
-    //         .unwrap();
-        
-    //     adapter
-    //         .request_device(
-    //             &wgpu::DeviceDescriptor {
-    //                 shader_validation: true,
-    //                 ..Default::default()
-    //             },
-    //             None
-    //         )
-    //         .await
-    //         .unwrap()
-    // });
-
-    // event_loop.run(move |event, _, control_flow| {
-    //     *control_flow = ControlFlow::Wait;
-
-    //     match event {
-    //         Event::WindowEvent {
-    //             event: WindowEvent::CloseRequested,
-    //             window_id,
-    //         } if window_id == window.id() => *control_flow = ControlFlow::Exit,
-    //         _ => {},
-    //     }
-    // })
-
-    // let mut data = HashMap::new();
-
-    // for var_id in vars {
-    //     println!("{}", var_id);
-    // }
-
-    // println!("{:#?}", tree);
-
-    // for scope in &scope_tree.scopes {
-    //     println!("{}", scope.name);
-    // }
-
-    // let mut mmap: VarMmapVec<StreamingValueChange> = unsafe { VarMmapVec::create()? };
-
-    // // let v = vec![0b1001_1010; 56 / 8];
-    // let bits = 4;
-
-    // mmap.push(&bits, StreamingVCBits {
-    //     var_id: VarId::new(75).unwrap(),
-    //     offset_to_prev: 42,
-    //     timestamp_delta_index: 0123,
-    //     bits: vec![Bit::X, Bit::Z, Bit::Zero, Bit::One].into_iter(),
-    // });
-
-    // let mut iter = mmap.iter();
-    // let first = iter.next_data(&bits).unwrap();
-
-    // println!("{:#?}", first);
-    // Outputs:
-    // StreamingVCBits {
-    //     var_id: 75,
-    //     offset_to_prev: 42,
-    //     bits: 011010100110101001101010011010100110101001101010011010,
-    // }
-
-    // let mut counter = 0;
-    // let mut iter = mmap.iter();
-    // while let Some(i) = iter.next_data(&()) {
-    //     // print!("{}, ", i);
-    //     if i != counter {
-    //         eprintln!("not sequential at {}, {}", i, counter);
-    //         break;
-    //     }
-    //     counter += 1;
-    // }
-
-    // drop(mmap);
-
-    // let mmap: MmapVecMut<u64> = unsafe { MmapVecMut::open("test.db")? };
-
-    // let mut counter = 0;
-
-    // // println!("{:?}", mmap.iter().nth(2));
-
-    // for i in mmap.iter() {
-    //     // print!("{}, ", i);
-    //     if i != counter {
-    //         eprintln!("not sequential at {}, {}", i, counter);
-    //         break;
-    //     }
-    //     counter += 1;
-    // }
-
     Ok(())
 }
 
-// fn load_data()
+fn main() -> anyhow::Result<()> {
+    let opt: Opt = Opt::from_args();
+    println!("{:?}", opt);
+
+    let extension = opt.file.extension()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| anyhow::anyhow!("file does not have an extension"))?;
+
+    let loader = if let Some(expected_format) = opt.format {
+        LOADERS
+            .iter()
+            .find_map(|(format, loader)| {
+                if expected_format == *format {
+                    Some(*loader)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| anyhow::anyhow!("file format not supported"))?
+    } else {
+        LOADERS
+            .iter()
+            .find_map(|(_, loader)| {
+                if loader.supports_file_extension(extension) {
+                    Some(*loader)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| anyhow::anyhow!("file format not supported"))?
+    };
+
+    println!("loading `{}` using {}", opt.file.display(), loader.description());
+    run(loader, opt.file)?;
+
+    Ok(())
+}

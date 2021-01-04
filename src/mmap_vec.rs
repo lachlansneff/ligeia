@@ -134,13 +134,13 @@ impl<T: VariableLength> VarMmapVec<T> {
         self.count = unsafe { &mut *(self.mapping.as_ptr() as *mut u64) };
     }
 
-    pub fn iter<Data>(&self) -> VarVecIter<T, Data> {
-        VarVecIter {
-            bytes: &self.mapping[16..],
-            count: *self.count,
-            _marker: PhantomData,
-        }
-    }
+    // pub fn iter<Data>(&self) -> VarVecIter<T, Data> {
+    //     VarVecIter {
+    //         bytes: &self.mapping[16..],
+    //         count: *self.count,
+    //         _marker: PhantomData,
+    //     }
+    // }
 
     pub fn flush(&self) {
         self.mapping.flush().expect("failed to flush mapping");
@@ -157,24 +157,24 @@ impl<T: VariableLength> VarMmapVec<T> {
     }
 }
 
-pub struct VarVecIter<'a, T: VariableLength, Data = <T as VariableLength>::DefaultReadData> {
-    bytes: &'a [u8],
-    count: u64,
-    _marker: PhantomData<(T, Data)>,
-}
+// pub struct VarVecIter<'a, T: VariableLength, Data = <T as VariableLength>::DefaultReadData> {
+//     bytes: &'a [u8],
+//     count: u64,
+//     _marker: PhantomData<(T, Data)>,
+// }
 
-impl<'a, T: VariableLength, Data: ReadData<'a, T>> VarVecIter<'a, T, Data> {
-    pub fn next_data(&mut self, meta: T::Meta) -> Option<Data> {
-        if self.count > 0 {
-            self.count -= 1;
-            let (data, offset) = Data::read_data(meta, &mut self.bytes);
-            self.bytes = &self.bytes[offset..];
-            Some(data)
-        } else {
-            None
-        }
-    }
-}
+// impl<'a, T: VariableLength, Data: ReadData<'a, T>> VarVecIter<'a, T, Data> {
+//     pub fn next_data(&mut self, meta: T::Meta) -> Option<Data> {
+//         if self.count > 0 {
+//             self.count -= 1;
+//             let (data, offset) = Data::read_data(meta, &mut self.bytes);
+//             self.bytes = &self.bytes[offset..];
+//             Some(data)
+//         } else {
+//             None
+//         }
+//     }
+// }
 
 // impl<'a, T: VariableLength> Iterator for MmapVecIter<'a, T> {
 //     type Item = T;
@@ -188,83 +188,83 @@ impl<'a, T: VariableLength, Data: ReadData<'a, T>> VarVecIter<'a, T, Data> {
 //     }
 // }
 
-pub unsafe trait Pod: Copy + Sized {}
+// pub unsafe trait Pod: Copy + Sized {}
 
-unsafe impl Pod for u64 {}
+// unsafe impl Pod for u64 {}
 
-struct ConstantLength<T>(T);
+// struct ConstantLength<T>(T);
 
-impl<T: Pod> WriteData for ConstantLength<T> {
-    fn max_size(_: ()) -> usize {
-        mem::size_of::<T>()
-    }
+// impl<T: Pod> WriteData for ConstantLength<T> {
+//     fn max_size(_: ()) -> usize {
+//         mem::size_of::<T>()
+//     }
 
-    fn write_bytes(self, _: (), b: &mut [u8]) -> usize {
-        assert!(b.len() >= mem::size_of::<T>());
-        unsafe { *(b.as_mut_ptr() as *mut T) = self.0 };
-        mem::size_of::<T>()
-    }
-}
+//     fn write_bytes(self, _: (), b: &mut [u8]) -> usize {
+//         assert!(b.len() >= mem::size_of::<T>());
+//         unsafe { *(b.as_mut_ptr() as *mut T) = self.0 };
+//         mem::size_of::<T>()
+//     }
+// }
 
-impl<'a, T: Pod> ReadData<'a> for ConstantLength<T> {
-    fn read_data(_: (), b: &[u8]) -> (Self, usize) {
-        assert!(b.len() >= mem::size_of::<T>());
-        let v = unsafe { *(b.as_ptr() as *const T) };
+// impl<'a, T: Pod> ReadData<'a> for ConstantLength<T> {
+//     fn read_data(_: (), b: &[u8]) -> (Self, usize) {
+//         assert!(b.len() >= mem::size_of::<T>());
+//         let v = unsafe { *(b.as_ptr() as *const T) };
 
-        (Self(v), mem::size_of::<T>())
-    }
-}
+//         (Self(v), mem::size_of::<T>())
+//     }
+// }
 
-impl<T: Pod> VariableLength for ConstantLength<T> {
-    type Meta = ();
-    type DefaultReadData = Self;
-}
+// impl<T: Pod> VariableLength for ConstantLength<T> {
+//     type Meta = ();
+//     type DefaultReadData = Self;
+// }
 
-pub struct MmapVec<T> {
-    inner: VarMmapVec<ConstantLength<T>>,
-    len: usize,
-}
+// pub struct MmapVec<T> {
+//     inner: VarMmapVec<ConstantLength<T>>,
+//     len: usize,
+// }
 
-impl<T: Pod> MmapVec<T> {
-    pub unsafe fn create() -> io::Result<Self> {
-        Ok(Self {
-            inner: VarMmapVec::create()?,
-            len: 0,
-        })
-    }
+// impl<T: Pod> MmapVec<T> {
+//     pub unsafe fn create() -> io::Result<Self> {
+//         Ok(Self {
+//             inner: VarMmapVec::create()?,
+//             len: 0,
+//         })
+//     }
 
-    pub unsafe fn create_with_capacity(capacity: usize) -> io::Result<Self> {
-        Ok(Self {
-            inner: VarMmapVec::create_with_capacity(capacity * mem::size_of::<T>())?,
-            len: 0,
-        })
-    }
+//     pub unsafe fn create_with_capacity(capacity: usize) -> io::Result<Self> {
+//         Ok(Self {
+//             inner: VarMmapVec::create_with_capacity(capacity * mem::size_of::<T>())?,
+//             len: 0,
+//         })
+//     }
 
-    /// Returns index of value.
-    pub fn push(&mut self, v: T) -> usize {
-        self.inner.push((), ConstantLength(v));
-        let index = self.len;
-        self.len += 1;
-        index
-    }
-}
+//     /// Returns index of value.
+//     pub fn push(&mut self, v: T) -> usize {
+//         self.inner.push((), ConstantLength(v));
+//         let index = self.len;
+//         self.len += 1;
+//         index
+//     }
+// }
 
-impl<T: Pod> Deref for MmapVec<T> {
-    type Target = [T];
+// impl<T: Pod> Deref for MmapVec<T> {
+//     type Target = [T];
     
-    fn deref(&self) -> &Self::Target {
-        let slice = &self.inner.mapping[16..];
-        unsafe {
-            slice::from_raw_parts(slice.as_ptr() as *const T, self.len)
-        }
-    }
-}
+//     fn deref(&self) -> &Self::Target {
+//         let slice = &self.inner.mapping[16..];
+//         unsafe {
+//             slice::from_raw_parts(slice.as_ptr() as *const T, self.len)
+//         }
+//     }
+// }
 
-impl<T: Pod> DerefMut for MmapVec<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        let slice = &mut self.inner.mapping[16..];
-        unsafe {
-            slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut T, self.len)
-        }
-    }
-}
+// impl<T: Pod> DerefMut for MmapVec<T> {
+//     fn deref_mut(&mut self) -> &mut Self::Target {
+//         let slice = &mut self.inner.mapping[16..];
+//         unsafe {
+//             slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut T, self.len)
+//         }
+//     }
+// }
