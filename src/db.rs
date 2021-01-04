@@ -1,7 +1,6 @@
-use std::{collections::{BTreeMap, HashMap}, convert::{TryFrom, TryInto}, fmt::{Debug, Display, Formatter}, io::{self, Read}, mem, num::NonZeroU64, path::Path, slice, sync::{Arc, Mutex}, time::Instant};
-use svcb::{StorageDeclaration, Timestep, VariableDeclaration};
+use std::{io::Read, path::Path};
 
-use crate::{mmap_vec::{ReadData, VarMmapVec, VariableLength, WriteData}, svcb, types::{Qit, QitSlice}};
+use crate::mmap_vec::{ReadData, VariableLength, WriteData};
 
 impl WriteData for u64 {
     #[inline]
@@ -51,20 +50,20 @@ impl VariableLength for u32 {
     type DefaultReadData = Self;
 }
 
-pub trait WaveformDatabase: Send {
-
-}
+pub trait WaveformDatabase: Send {}
 
 pub trait WaveformLoader: Sync {
     fn supports_file_extension(&self, s: &str) -> bool;
     fn description(&self) -> String;
-    
+
     /// A file is technically a stream, but generally, specializing parsers for files can be more efficient than parsing
     /// from a generic reader.
     fn load_file(&self, path: &Path) -> anyhow::Result<Box<dyn WaveformDatabase>>;
-    fn load_stream(&self, reader: Box<dyn Read>) -> anyhow::Result<Box<dyn WaveformDatabase>>;
+    fn load_stream<'a>(
+        &self,
+        reader: Box<dyn Read + 'a>,
+    ) -> anyhow::Result<Box<dyn WaveformDatabase>>;
 }
-
 
 // const NODE_CHILDREN: usize = 8;
 
@@ -87,14 +86,14 @@ pub trait WaveformLoader: Sync {
 //     fn write_bytes(self, qits: usize, b: &mut [u8]) -> usize {
 //         let total_size = Self::max_size(qits);
 //         let children_size = mem::size_of::<[u32; NODE_CHILDREN]>();
-        
+
 //         b[..children_size]
 //             .copy_from_slice(unsafe {
 //                 slice::from_raw_parts(self.children.as_ptr() as *const u8, self.children.len() * mem::size_of::<u32>())
 //             });
 
 //         self.averaged_qits.write_qits(&mut b[children_size..total_size]);
-        
+
 //         total_size
 //     }
 // }
@@ -172,8 +171,6 @@ pub trait WaveformLoader: Sync {
 //         // let thread_pool = rayon::ThreadPoolBuilder::new().build().expect("failed to build threadpool");
 //         // let num_threads = thread_pool.current_num_threads();
 
-        
-
 //         todo!()
 //     }
 
@@ -183,6 +180,6 @@ pub trait WaveformLoader: Sync {
 // }
 
 // pub struct QueryDb {
-    
-//     // frustum_tree: 
+
+//     // frustum_tree:
 // }

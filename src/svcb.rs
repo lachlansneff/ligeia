@@ -1,15 +1,24 @@
+use crate::{
+    db::WaveformLoader,
+    mmap_vec::{VarMmapVec, VariableLength, WriteData},
+    types::{BitSlice, BitVec, QitSlice, SizeInBytes},
+};
 use anyhow::anyhow;
-// use nom::{Err, IResult, bytes::streaming::take, combinator::map_res, error::{Error, ErrorKind}, number::streaming::le_u32};
+use std::{
+    collections::HashMap,
+    convert::TryInto,
+    fs::File,
+    io::{self, Read},
+    num::NonZeroUsize,
+    str,
+    time::Instant,
+};
 use thiserror::Error;
-use std::{collections::HashMap, convert::TryInto, fs::File, io, num::NonZeroUsize, str, time::Instant};
-use crate::{db::WaveformLoader, mmap_vec::{VarMmapVec, VariableLength, WriteData}, types::{Bit, BitSlice, BitVec, Qit, QitSlice, SizeInBytes}};
-
-// type IResult<I, O> = Result<(I, O), Err<()>>;
 
 #[derive(Error, Debug)]
 pub enum Reason {
-    #[error("an invalid magic header was present")]
-    InvalidMagic,
+    #[error("an invalid file signature was present")]
+    InvalidFileSignature,
     #[error("an invalid version header was present")]
     InvalidVersion,
     #[error("storage id is not valid")]
@@ -30,6 +39,8 @@ pub enum Reason {
     IoError(#[from] io::Error),
     #[error("an invalid block type was present")]
     InvalidBlockType,
+    #[error("unexpected end of the stream")]
+    BrokenStream,
 }
 
 #[derive(Error, Debug)]
@@ -74,20 +85,22 @@ fn take(count: usize) -> impl Fn(&[u8]) -> ParseResult<&[u8]> {
 
 impl<'i> Parse<'i> for u8 {
     fn parse(i: &[u8]) -> ParseResult<Self> {
-        if let Ok(bytes) = i.try_into() {
-            Ok((&i[1..], u8::from_le_bytes(bytes)))
+        if i.len() < 1 {
+            Err(Error::Incomplete(NonZeroUsize::new(1 - i.len())))
         } else {
-            Err(Error::Incomplete(NonZeroUsize::new(1)))
+            let (bytes, rest) = i.split_at(1);
+            Ok((rest, u8::from_le_bytes(bytes.try_into().unwrap())))
         }
     }
 }
 
 impl<'i> Parse<'i> for u32 {
     fn parse(i: &[u8]) -> ParseResult<Self> {
-        if let Ok(bytes) = i.try_into() {
-            Ok((&i[1..], u32::from_le_bytes(bytes)))
-        } else {
+        if i.len() < 4 {
             Err(Error::Incomplete(NonZeroUsize::new(4 - i.len())))
+        } else {
+            let (bytes, rest) = i.split_at(4);
+            Ok((rest, u32::from_le_bytes(bytes.try_into().unwrap())))
         }
     }
 }
@@ -97,24 +110,22 @@ pub struct Varu64;
 
 impl<'i> Parse<'i, u32> for Varu32 {
     fn parse(i: &[u8]) -> ParseResult<u32> {
-        let (x, size) = varint_simd::decode(i)
-            .or_else(|e| match e {
-                varint_simd::VarIntDecodeError::Overflow => Err(Error::Failure(Reason::InvalidVarInt)),
-                varint_simd::VarIntDecodeError::NotEnoughBytes => Err(Error::Incomplete(None))
-            })?;
-        
+        let (x, size) = varint_simd::decode(i).or_else(|e| match e {
+            varint_simd::VarIntDecodeError::Overflow => Err(Error::Failure(Reason::InvalidVarInt)),
+            varint_simd::VarIntDecodeError::NotEnoughBytes => Err(Error::Incomplete(None)),
+        })?;
+
         Ok((&i[size as usize..], x))
     }
 }
 
 impl<'i> Parse<'i, u64> for Varu64 {
     fn parse(i: &[u8]) -> ParseResult<u64> {
-        let (x, size) = varint_simd::decode(i)
-            .or_else(|e| match e {
-                varint_simd::VarIntDecodeError::Overflow => Err(Error::Failure(Reason::InvalidVarInt)),
-                varint_simd::VarIntDecodeError::NotEnoughBytes => Err(Error::Incomplete(None))
-            })?;
-        
+        let (x, size) = varint_simd::decode(i).or_else(|e| match e {
+            varint_simd::VarIntDecodeError::Overflow => Err(Error::Failure(Reason::InvalidVarInt)),
+            varint_simd::VarIntDecodeError::NotEnoughBytes => Err(Error::Incomplete(None)),
+        })?;
+
         Ok((&i[size as usize..], x))
     }
 }
@@ -173,7 +184,7 @@ impl Parse<'_> for Header {
         let (i, magic) = u32::parse(i)?;
         let magic = magic.to_le_bytes();
         if magic != *b"svcb" {
-            return Err(Error::Failure(Reason::InvalidMagic));
+            return Err(Error::Failure(Reason::InvalidFileSignature));
         }
 
         let (i, version) = u32::parse(i)?;
@@ -183,7 +194,14 @@ impl Parse<'_> for Header {
 
         let (i, timescale) = u32::parse(i)?;
 
-        Ok((i, Self { magic, version, timescale }))
+        Ok((
+            i,
+            Self {
+                magic,
+                version,
+                timescale,
+            },
+        ))
     }
 }
 
@@ -200,7 +218,14 @@ impl<'i> Parse<'i> for ScopeDeclaration {
         let (i, scope_id) = u32::parse(i)?;
         let (i, name) = String::parse(i)?;
 
-        Ok((i, Self { parent_scope_id, scope_id, name }))
+        Ok((
+            i,
+            Self {
+                parent_scope_id,
+                scope_id,
+                name,
+            },
+        ))
     }
 }
 
@@ -216,28 +241,28 @@ impl<'i> Parse<'i> for Signedness {
         match raw {
             0 => Ok((i, Signedness::SignedTwosComplement)),
             1 => Ok((i, Signedness::Unsigned)),
-            _ => Err(Error::Failure(Reason::InvalidSignedValue))
+            _ => Err(Error::Failure(Reason::InvalidSignedValue)),
         }
     }
 }
 
 impl<'i> ParseWith<'i, usize> for BitVec {
     fn parse_with(i: &[u8], bits: usize) -> ParseResult<Self> {
-        let (i, data) = take(Bit::bits_to_bytes(bits))(i)?;
+        let (i, data) = take(Self::size_in_bytes(bits))(i)?;
         Ok((i, BitVec::new(bits, data)))
     }
 }
 
 impl<'i> ParseWith<'i, usize> for BitSlice<'i> {
     fn parse_with(i: &'i [u8], bits: usize) -> ParseResult<'i, Self> {
-        let (i, data) = take(Bit::bits_to_bytes(bits))(i)?;
+        let (i, data) = take(Self::size_in_bytes(bits))(i)?;
         Ok((i, BitSlice::new(bits, data)))
     }
 }
 
 impl<'i> ParseWith<'i, usize> for QitSlice<'i> {
     fn parse_with(i: &'i [u8], bits: usize) -> ParseResult<'i, Self> {
-        let (i, data) = take(Qit::bits_to_bytes(bits))(i)?;
+        let (i, data) = take(Self::size_in_bytes(bits))(i)?;
         Ok((i, QitSlice::new(bits, data)))
     }
 }
@@ -270,7 +295,7 @@ pub enum VariableInterpretation {
     },
     Other {
         storage_id: u32,
-    }
+    },
 }
 
 impl<'i, E: StorageLookup> ParseWith<'i, &E> for VariableInterpretation {
@@ -299,14 +324,17 @@ impl<'i, E: StorageLookup> ParseWith<'i, &E> for VariableInterpretation {
                 let (i, lsb) = u32::parse(i)?;
                 let (i, signedness) = Signedness::parse(i)?;
 
-                Ok((i, VariableInterpretation::Integer {
-                    storage_ids,
-                    msb,
-                    lsb,
-                    signedness,
-                }))
+                Ok((
+                    i,
+                    VariableInterpretation::Integer {
+                        storage_ids,
+                        msb,
+                        lsb,
+                        signedness,
+                    },
+                ))
             }
-            _ => Err(Error::Failure(Reason::InvalidInterpretationValue))
+            _ => Err(Error::Failure(Reason::InvalidInterpretationValue)),
         }
     }
 }
@@ -325,18 +353,21 @@ impl<'i, E: StorageLookup> ParseWith<'i, &E> for VariableDeclaration {
 
         let (i, interpretation) = VariableInterpretation::parse_with(i, storages)?;
 
-        Ok((i, VariableDeclaration { scope_id, name, interpretation }))
+        Ok((
+            i,
+            VariableDeclaration {
+                scope_id,
+                name,
+                interpretation,
+            },
+        ))
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StorageType {
-    Binary {
-        lsb: u32,
-    },
-    Quaternary {
-        lsb: u32,
-    },
+    Binary { lsb: u32 },
+    Quaternary { lsb: u32 },
     Utf8,
 }
 
@@ -346,26 +377,14 @@ impl Parse<'_> for StorageType {
         match ty {
             0 => {
                 let (i, lsb) = u32::parse(i)?;
-                Ok((i,
-                    StorageType::Binary {
-                        lsb,
-                    }
-                ))
-            },
+                Ok((i, StorageType::Binary { lsb }))
+            }
             1 => {
                 let (i, lsb) = u32::parse(i)?;
-                Ok((i,
-                    StorageType::Quaternary {
-                        lsb,
-                    }
-                ))
-            },
-            2 => {
-                Ok((i, StorageType::Utf8))
-            },
-            _ => {
-                Err(Error::Failure(Reason::InvalidStorageType))
+                Ok((i, StorageType::Quaternary { lsb }))
             }
+            2 => Ok((i, StorageType::Utf8)),
+            _ => Err(Error::Failure(Reason::InvalidStorageType)),
         }
     }
 }
@@ -403,13 +422,14 @@ pub enum ValueChange<'a> {
     Utf8(&'a [u8]),
 }
 
-impl<'i, 'a, F: FnOnce(u32) -> Option<&'a StorageDeclaration>> ParseWith<'i, F> for ValueChange<'i> {
+impl<'i, 'a, F: FnOnce(u32) -> Option<&'a StorageDeclaration>> ParseWith<'i, F>
+    for ValueChange<'i>
+{
     fn parse_with(i: &'i [u8], f: F) -> ParseResult<'i, Self> {
         let (i, storage_id) = Varu32::parse(i)?;
 
-        let storage = f(storage_id)
-            .ok_or_else(|| Error::Failure(Reason::InvalidStorageId))?;
-        
+        let storage = f(storage_id).ok_or_else(|| Error::Failure(Reason::InvalidStorageId))?;
+
         match storage.ty {
             StorageType::Binary { lsb } => {
                 let (i, bitslice) = BitSlice::parse_with(i, (storage.length - lsb) as usize)?;
@@ -430,46 +450,6 @@ impl<'i, 'a, F: FnOnce(u32) -> Option<&'a StorageDeclaration>> ParseWith<'i, F> 
     }
 }
 
-// #[derive(Clone, Copy)]
-// pub struct ValueChanges<'i, 'a, L> {
-//     storages: &'a L,
-//     remaining: usize,
-//     data: &'i [u8],
-// }
-
-// impl<'i, 'a, L> ValueChanges<'i, 'a, L> {
-//     pub fn input(&self) -> &'i [u8] {
-//         self.data
-//     }
-// }
-
-// impl<'i, 'a, L> ParseWith<'i, &'a L> for ValueChanges<'i, 'a, L> {
-//     fn parse_with(i: &'i [u8], storages: &'a L) -> ParseResult<'i, Self> {
-//         let (i, count) = Varu32::parse(i)?;
-
-//         Ok((i, Self { storages, remaining: count as usize, data: i }))
-//     }
-// }
-
-// impl<'i, 'a, L: StorageLookup> Iterator for ValueChanges<'i, 'a, L> {
-//     type Item = Result<ValueChange<'i>, Error>;
-
-//     fn next(&mut self) -> Option<Self::Item> {
-//         if self.remaining == 0 {
-//             return None;
-//         }
-//         self.remaining -= 1;
-
-//         let (i, value_change) = match ValueChange::parse_with(self.data, self.storages) {
-//             Ok(x) => x,
-//             Err(e) => return Some(Err(e)),
-//         };
-//         self.data = i;
-
-//         Some(Ok(value_change))
-//     }
-// }
-
 struct ValueChangeData<T> {
     storage_id: u32,
     offset_to_prev: u64,
@@ -483,14 +463,16 @@ impl<T: AsRef<[u8]> + SizeInBytes> WriteData<ValueChangeProxy> for ValueChangeDa
     #[inline]
     fn max_size(length: usize) -> usize {
         <u32 as WriteData>::max_size(())
-        + <u64 as WriteData>::max_size(()) * 2
-        + T::size_in_bytes(length)
+            + <u64 as WriteData>::max_size(()) * 2
+            + T::size_in_bytes(length)
     }
 
     fn write_bytes(self, length: usize, mut b: &mut [u8]) -> usize {
         let mut header = self.storage_id.write_bytes((), &mut b);
         header += self.offset_to_prev.write_bytes((), &mut b[header..]);
-        header += self.offset_to_prev_timestamp.write_bytes((), &mut b[header..]);
+        header += self
+            .offset_to_prev_timestamp
+            .write_bytes((), &mut b[header..]);
 
         let bytes = T::size_in_bytes(length);
 
@@ -544,15 +526,11 @@ pub struct SvcbConverter {
     timestamp_chain: VarMmapVec<u64>,
 
     value_changes: VarMmapVec<ValueChangeProxy>,
-
     // var_tree: VarTree,
 }
 
-
 impl SvcbConverter {
-    pub fn load_svcb(input: &[u8]) -> Result<Self, Error> {
-        use crate::svcb::*;
-
+    fn load_svcb(input: &[u8]) -> Result<Self, Error> {
         impl<'a> StorageLookup for HashMap<u32, (StorageMeta, StorageDeclaration), ahash::RandomState> {
             fn lookup(&self, storage_id: u32) -> Option<&StorageDeclaration> {
                 self.get(&storage_id).map(|(_, declaration)| declaration)
@@ -561,7 +539,8 @@ impl SvcbConverter {
 
         let (mut input, _header) = Header::parse(input)?;
 
-        let mut storages: HashMap<u32, (StorageMeta, StorageDeclaration), ahash::RandomState> = HashMap::default();
+        let mut storages: HashMap<u32, (StorageMeta, StorageDeclaration), ahash::RandomState> =
+            HashMap::default();
         let mut timestamp_chain = unsafe { VarMmapVec::create()? };
         let mut value_changes = unsafe { VarMmapVec::create()? };
 
@@ -595,17 +574,21 @@ impl SvcbConverter {
                 // Storage Declaration.
                 2 => {
                     let (i, declaration) = StorageDeclaration::parse(i)?;
-                    storages.insert(declaration.id, (
-                        StorageMeta {
-                            last_value_change_offset: 0,
-                            number_of_value_changes: 0,
-                            last_timestamp_offset: 0,
-                            last_timestamp: 0,
-                        },
-                        declaration,
-                    ))
+                    storages
+                        .insert(
+                            declaration.id,
+                            (
+                                StorageMeta {
+                                    last_value_change_offset: 0,
+                                    number_of_value_changes: 0,
+                                    last_timestamp_offset: 0,
+                                    last_timestamp: 0,
+                                },
+                                declaration,
+                            ),
+                        )
                         .ok_or(Error::Failure(Reason::DuplicatedStorageId))?;
-                    
+
                     processed_commands_count += 1;
                     i
                 }
@@ -618,40 +601,48 @@ impl SvcbConverter {
                         let mut storage_meta = None;
                         let (i2, value_change) = ValueChange::parse_with(i, |storage_id| {
                             // storages.get(&storage_id)
-                            storages.get_mut(&storage_id)
-                                .map(|(storage, declaration)| {
-                                    storage_meta = Some((storage, declaration as &StorageDeclaration));
-                                    declaration as _
-                                })
+                            storages.get_mut(&storage_id).map(|(storage, declaration)| {
+                                storage_meta = Some((storage, declaration as &StorageDeclaration));
+                                declaration as _
+                            })
                         })?;
                         i = i2;
                         let (storage, declaration) = storage_meta.unwrap();
 
                         storage.last_value_change_offset = match value_change {
-                            ValueChange::Binary(bits) => {
-                                value_changes.push(declaration.length as _, ValueChangeData {
+                            ValueChange::Binary(bits) => value_changes.push(
+                                declaration.length as _,
+                                ValueChangeData {
                                     storage_id: declaration.id,
-                                    offset_to_prev: value_changes.current_offset() - storage.last_value_change_offset,
-                                    offset_to_prev_timestamp: timestep_offset - storage.last_timestamp_offset,
+                                    offset_to_prev: value_changes.current_offset()
+                                        - storage.last_value_change_offset,
+                                    offset_to_prev_timestamp: timestep_offset
+                                        - storage.last_timestamp_offset,
                                     storage: bits,
-                                })
-                            },
-                            ValueChange::Quaternary(qits) => {
-                                value_changes.push(declaration.length as _, ValueChangeData {
+                                },
+                            ),
+                            ValueChange::Quaternary(qits) => value_changes.push(
+                                declaration.length as _,
+                                ValueChangeData {
                                     storage_id: declaration.id,
-                                    offset_to_prev: value_changes.current_offset() - storage.last_value_change_offset,
-                                    offset_to_prev_timestamp: timestep_offset - storage.last_timestamp_offset,
+                                    offset_to_prev: value_changes.current_offset()
+                                        - storage.last_value_change_offset,
+                                    offset_to_prev_timestamp: timestep_offset
+                                        - storage.last_timestamp_offset,
                                     storage: qits,
-                                })
-                            }
-                            ValueChange::Utf8(bytes) => {
-                                value_changes.push(declaration.length as _, ValueChangeData {
+                                },
+                            ),
+                            ValueChange::Utf8(bytes) => value_changes.push(
+                                declaration.length as _,
+                                ValueChangeData {
                                     storage_id: declaration.id,
-                                    offset_to_prev: value_changes.current_offset() - storage.last_value_change_offset,
-                                    offset_to_prev_timestamp: timestep_offset - storage.last_timestamp_offset,
+                                    offset_to_prev: value_changes.current_offset()
+                                        - storage.last_value_change_offset,
+                                    offset_to_prev_timestamp: timestep_offset
+                                        - storage.last_timestamp_offset,
                                     storage: bytes,
-                                })
-                            }
+                                },
+                            ),
                         };
                         storage.number_of_value_changes += 1;
                         storage.last_timestamp_offset = timestep_offset;
@@ -670,20 +661,228 @@ impl SvcbConverter {
 
                     processed_commands_count += 1;
                     number_of_timestamps += 1;
-                    
+
                     i
                 }
                 _ => {
                     return Err(Error::Failure(Reason::InvalidBlockType));
                 }
             }
-        }        
+        }
 
         let elapsed = start.elapsed();
-        println!("processed {} commands in {:.2} seconds", processed_commands_count, elapsed.as_secs_f32());
+        println!(
+            "processed {} commands in {:.2} seconds",
+            processed_commands_count,
+            elapsed.as_secs_f32()
+        );
         println!("contained {} timestamps", number_of_timestamps);
         println!("accumulated timestamp: {}", timestamp_acc);
-        
+
+        Ok(Self {
+            storages,
+            timestamp_chain,
+            value_changes,
+            // var_tree: todo!(),
+        })
+    }
+
+    fn load_svcb_stream<R: Read>(mut reader: R) -> Result<Self, Error> {
+        use circular::Buffer;
+
+        struct Eof;
+        fn complete<F, R>(reader: &mut R, b: &mut Buffer, mut f: F) -> Result<Option<Eof>, Error>
+        where
+            F: FnMut(&[u8]) -> Result<&[u8], Error>,
+            R: Read,
+        {
+            loop {
+                let i = b.data();
+                let orig_len = i.len();
+                match f(i) {
+                    Ok(i2) => {
+                        let len = i2.len();
+                        b.consume(orig_len - len);
+                        let sz = reader.read(b.space())?;
+                        b.fill(sz);
+                        break Ok(if b.available_data() == 0 {
+                            Some(Eof)
+                        } else {
+                            None
+                        });
+                    }
+                    Err(Error::Incomplete(needed)) => {
+                        if let Some(sz) = needed {
+                            b.grow(b.available_data() + sz.get());
+                        }
+
+                        let sz = reader.read(b.space())?;
+                        b.fill(sz);
+                        if sz == 0 {
+                            break Err(Error::Failure(Reason::BrokenStream));
+                        }
+                    }
+                    Err(e) => break Err(e),
+                }
+            }
+        }
+
+        let mut b = Buffer::with_capacity(1_000_000);
+
+        complete(&mut reader, &mut b, |input| {
+            let (i, _header) = Header::parse(input)?;
+            Ok(i)
+        })?;
+
+        let mut storages: HashMap<u32, (StorageMeta, StorageDeclaration), ahash::RandomState> =
+            HashMap::default();
+        let mut timestamp_chain = unsafe { VarMmapVec::create()? };
+        let mut value_changes = unsafe { VarMmapVec::create()? };
+
+        let mut processed_commands_count = 0;
+        let start = Instant::now();
+
+        let mut timestamp_acc = 0;
+        let mut timestep_offset = 0;
+        let mut number_of_timestamps = 0;
+
+        loop {
+            let maybe_eof = complete(&mut reader, &mut b, |i| {
+                let (i, block_type) = u8::parse(i)?;
+
+                let i = match block_type {
+                    // Scope Declaration.
+                    0 => {
+                        let (i, scope) = ScopeDeclaration::parse(i)?;
+                        println!("received scope declaration: {:#?}", scope);
+
+                        processed_commands_count += 1;
+                        i
+                    }
+                    // Variable Declaration.
+                    1 => {
+                        let (i, variable) = VariableDeclaration::parse_with(i, &storages)?;
+                        println!("received variable declaration: {:#?}", variable);
+
+                        processed_commands_count += 1;
+                        i
+                    }
+                    // Storage Declaration.
+                    2 => {
+                        let (i, declaration) = StorageDeclaration::parse(i)?;
+                        storages
+                            .insert(
+                                declaration.id,
+                                (
+                                    StorageMeta {
+                                        last_value_change_offset: 0,
+                                        number_of_value_changes: 0,
+                                        last_timestamp_offset: 0,
+                                        last_timestamp: 0,
+                                    },
+                                    declaration,
+                                ),
+                            )
+                            .ok_or(Error::Failure(Reason::DuplicatedStorageId))?;
+
+                        processed_commands_count += 1;
+                        i
+                    }
+                    // Value Change
+                    3 => {
+                        // let (_, mut value_changes) = ValueChanges::parse_with(i, &storage_declarations)?;
+                        let (mut i, count) = Varu32::parse(i)?;
+
+                        for _ in 0..count {
+                            let mut storage_meta = None;
+                            let (i2, value_change) = ValueChange::parse_with(i, |storage_id| {
+                                // storages.get(&storage_id)
+                                storages.get_mut(&storage_id).map(|(storage, declaration)| {
+                                    storage_meta =
+                                        Some((storage, declaration as &StorageDeclaration));
+                                    declaration as _
+                                })
+                            })?;
+                            i = i2;
+                            let (storage, declaration) = storage_meta.unwrap();
+
+                            storage.last_value_change_offset = match value_change {
+                                ValueChange::Binary(bits) => value_changes.push(
+                                    declaration.length as _,
+                                    ValueChangeData {
+                                        storage_id: declaration.id,
+                                        offset_to_prev: value_changes.current_offset()
+                                            - storage.last_value_change_offset,
+                                        offset_to_prev_timestamp: timestep_offset
+                                            - storage.last_timestamp_offset,
+                                        storage: bits,
+                                    },
+                                ),
+                                ValueChange::Quaternary(qits) => value_changes.push(
+                                    declaration.length as _,
+                                    ValueChangeData {
+                                        storage_id: declaration.id,
+                                        offset_to_prev: value_changes.current_offset()
+                                            - storage.last_value_change_offset,
+                                        offset_to_prev_timestamp: timestep_offset
+                                            - storage.last_timestamp_offset,
+                                        storage: qits,
+                                    },
+                                ),
+                                ValueChange::Utf8(bytes) => value_changes.push(
+                                    declaration.length as _,
+                                    ValueChangeData {
+                                        storage_id: declaration.id,
+                                        offset_to_prev: value_changes.current_offset()
+                                            - storage.last_value_change_offset,
+                                        offset_to_prev_timestamp: timestep_offset
+                                            - storage.last_timestamp_offset,
+                                        storage: bytes,
+                                    },
+                                ),
+                            };
+                            storage.number_of_value_changes += 1;
+                            storage.last_timestamp_offset = timestep_offset;
+                            storage.last_timestamp = timestamp_acc;
+                        }
+
+                        processed_commands_count += 1;
+                        i
+                    }
+                    // Timestep
+                    4 => {
+                        let (i, Timestep(timestep)) = Timestep::parse(i)?;
+
+                        timestep_offset = timestamp_chain.push((), timestep);
+                        timestamp_acc += timestep;
+
+                        processed_commands_count += 1;
+                        number_of_timestamps += 1;
+
+                        i
+                    }
+                    _ => {
+                        return Err(Error::Failure(Reason::InvalidBlockType));
+                    }
+                };
+
+                Ok(i)
+            })?;
+
+            if let Some(Eof) = maybe_eof {
+                break;
+            }
+        }
+
+        let elapsed = start.elapsed();
+        println!(
+            "processed {} commands in {:.2} seconds",
+            processed_commands_count,
+            elapsed.as_secs_f32()
+        );
+        println!("contained {} timestamps", number_of_timestamps);
+        println!("accumulated timestamp: {}", timestamp_acc);
+
         Ok(Self {
             storages,
             timestamp_chain,
@@ -710,7 +909,10 @@ impl WaveformLoader for SvcbLoader {
         "the Streamed Value Change Blocks (SVCB) loader".to_string()
     }
 
-    fn load_file(&self, path: &std::path::Path) -> anyhow::Result<Box<dyn crate::db::WaveformDatabase>> {
+    fn load_file(
+        &self,
+        path: &std::path::Path,
+    ) -> anyhow::Result<Box<dyn crate::db::WaveformDatabase>> {
         let f = File::open(&path)?;
         let map = unsafe { mapr::Mmap::map(&f) };
         // let converter = SvcbConverter::load_svcb(&map[..]);
@@ -719,15 +921,22 @@ impl WaveformLoader for SvcbLoader {
             Ok(map) => SvcbConverter::load_svcb(&map[..])?,
             Err(_) => {
                 println!("mmap failed, attempting to load file as a stream");
-                // Mmapping failed, let's try to load as a reader
-                todo!()
+
+                return self.load_stream(Box::new(f));
             }
         };
 
         Err(anyhow!("not yet implemented"))
     }
 
-    fn load_stream(&self, reader: Box<dyn io::Read>) -> anyhow::Result<Box<dyn crate::db::WaveformDatabase>> {
-        Err(anyhow!("loading from a stream is not yet implemented for SVCB"))
+    fn load_stream<'a>(
+        &self,
+        reader: Box<dyn io::Read + 'a>,
+    ) -> anyhow::Result<Box<dyn crate::db::WaveformDatabase>> {
+        let converter = SvcbConverter::load_svcb_stream(reader)?;
+
+        Err(anyhow!(
+            "loading from a stream is not yet implemented for SVCB"
+        ))
     }
 }

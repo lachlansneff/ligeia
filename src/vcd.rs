@@ -1,10 +1,22 @@
-use std::{collections::{BTreeMap, HashMap}, convert::{TryFrom, TryInto}, fmt::{Debug, Display, Formatter}, fs::File, io::{self, Read}, num::NonZeroU64, time::Instant};
+use std::{
+    collections::{BTreeMap, HashMap},
+    convert::{TryFrom, TryInto},
+    fmt::{Debug, Display, Formatter},
+    fs::File,
+    io::{self, Read},
+    num::NonZeroU64,
+    time::Instant,
+};
 
 use anyhow::anyhow;
 use io::BufReader;
 use vcd::{Command, Parser, ScopeItem};
 
-use crate::{db::WaveformLoader, mmap_vec::{ReadData, VarMmapVec, VariableLength, WriteData}, types::{Qit, QitSlice}};
+use crate::{
+    db::WaveformLoader,
+    mmap_vec::{ReadData, VarMmapVec, VariableLength, WriteData},
+    types::{Qit, QitSlice},
+};
 
 struct NotValidVarIdError(());
 
@@ -22,9 +34,7 @@ impl VarId {
         if x == u64::max_value() {
             Err(NotValidVarIdError(()))
         } else {
-            Ok(Self(unsafe {
-                NonZeroU64::new_unchecked(x + 1)
-            }))
+            Ok(Self(unsafe { NonZeroU64::new_unchecked(x + 1) }))
         }
     }
 
@@ -93,7 +103,6 @@ impl From<vcd::Value> for Qit {
     }
 }
 
-
 #[derive(Debug)]
 struct VarInfo {
     pub name: String,
@@ -113,7 +122,10 @@ struct VarTree {
 }
 
 fn find_all_scopes_and_variables(header: vcd::Header) -> VarTree {
-    fn recurse(variables: &mut BTreeMap<VarId, VarInfo>, items: impl Iterator<Item=vcd::ScopeItem>) -> (Vec<Scope>, Vec<VarId>) {
+    fn recurse(
+        variables: &mut BTreeMap<VarId, VarInfo>,
+        items: impl Iterator<Item = vcd::ScopeItem>,
+    ) -> (Vec<Scope>, Vec<VarId>) {
         let mut scopes = vec![];
         let mut vars = vec![];
 
@@ -122,10 +134,13 @@ fn find_all_scopes_and_variables(header: vcd::Header) -> VarTree {
                 ScopeItem::Var(var) => {
                     let id = var.code.number().try_into().unwrap();
                     vars.push(id);
-                    variables.insert(id, VarInfo {
-                        name: var.reference,
-                        qits: var.size,
-                    });
+                    variables.insert(
+                        id,
+                        VarInfo {
+                            name: var.reference,
+                            qits: var.size,
+                        },
+                    );
                 }
                 ScopeItem::Scope(scope) => {
                     let (sub_scopes, sub_vars) = recurse(variables, scope.children.into_iter());
@@ -213,7 +228,9 @@ impl<T: WriteQits> WriteData<ValueChangeProxy> for ValueChange<T> {
     fn write_bytes(self, qits: usize, mut b: &mut [u8]) -> usize {
         let mut header = self.var_id.write_bytes((), &mut b);
         header += self.offset_to_prev.write_bytes((), &mut b[header..]);
-        header += self.offset_to_prev_timestamp.write_bytes((), &mut b[header..]);
+        header += self
+            .offset_to_prev_timestamp
+            .write_bytes((), &mut b[header..]);
 
         let bytes = Qit::bits_to_bytes(qits);
 
@@ -287,13 +304,16 @@ impl VcdConverter {
         );
 
         for (&var_id, var_info) in &var_tree.variables {
-            var_metas.insert(var_id, VarMeta {
-                qits: var_info.qits,
-                last_value_change_offset: 0,
-                number_of_value_changes: 0,
-                last_timestamp_offset: 0,
-                last_timestamp: 0,
-            });
+            var_metas.insert(
+                var_id,
+                VarMeta {
+                    qits: var_info.qits,
+                    last_value_change_offset: 0,
+                    number_of_value_changes: 0,
+                    last_timestamp_offset: 0,
+                    last_timestamp: 0,
+                },
+            );
         }
 
         let mut timestamp_chain = unsafe { VarMmapVec::create()? };
@@ -320,12 +340,17 @@ impl VcdConverter {
                     let var_id: VarId = code.number().try_into().unwrap();
                     let var_meta = var_metas.get_mut(&var_id).unwrap();
 
-                    var_meta.last_value_change_offset = value_change.push(values.len(), ValueChange {
-                        var_id,
-                        offset_to_prev: value_change.current_offset() - var_meta.last_value_change_offset,
-                        offset_to_prev_timestamp: timestamp_offset - var_meta.last_timestamp_offset,
-                        qits: values.into_iter().copied().map(Into::into)
-                    });
+                    var_meta.last_value_change_offset = value_change.push(
+                        values.len(),
+                        ValueChange {
+                            var_id,
+                            offset_to_prev: value_change.current_offset()
+                                - var_meta.last_value_change_offset,
+                            offset_to_prev_timestamp: timestamp_offset
+                                - var_meta.last_timestamp_offset,
+                            qits: values.into_iter().copied().map(Into::into),
+                        },
+                    );
                     var_meta.number_of_value_changes += 1;
                     var_meta.last_timestamp_offset = timestamp_offset;
                     var_meta.last_timestamp = last_timestamp;
@@ -336,24 +361,33 @@ impl VcdConverter {
                     let var_id: VarId = code.number().try_into().unwrap();
                     let var_meta = var_metas.get_mut(&var_id).unwrap();
 
-                    var_meta.last_value_change_offset = value_change.push(1, ValueChange {
-                        var_id,
-                        offset_to_prev: value_change.current_offset() - var_meta.last_value_change_offset,
-                        offset_to_prev_timestamp: timestamp_offset - var_meta.last_timestamp_offset,
-                        qits: Some(value.into()).into_iter(),
-                    });
+                    var_meta.last_value_change_offset = value_change.push(
+                        1,
+                        ValueChange {
+                            var_id,
+                            offset_to_prev: value_change.current_offset()
+                                - var_meta.last_value_change_offset,
+                            offset_to_prev_timestamp: timestamp_offset
+                                - var_meta.last_timestamp_offset,
+                            qits: Some(value.into()).into_iter(),
+                        },
+                    );
                     var_meta.number_of_value_changes += 1;
                     var_meta.last_timestamp_offset = timestamp_offset;
                     var_meta.last_timestamp = last_timestamp;
 
                     processed_commands_count += 1;
                 }
-                _ => {},
+                _ => {}
             }
         }
 
         let elapsed = start.elapsed();
-        println!("processed {} commands in {:.2} seconds", processed_commands_count, elapsed.as_secs_f32());
+        println!(
+            "processed {} commands in {:.2} seconds",
+            processed_commands_count,
+            elapsed.as_secs_f32()
+        );
         println!("contained {} timestamps", number_of_timestamps);
         println!("last timestamp: {}", last_timestamp);
 
@@ -402,11 +436,15 @@ impl<'a> Iterator for ReverseValueChangeIter<'a> {
         }
         self.remaining -= 1;
 
-        let timestamp_delta: u64 = self.timestamp_chain.get_at((), self.current_timestamp_offset);
+        let timestamp_delta: u64 = self
+            .timestamp_chain
+            .get_at((), self.current_timestamp_offset);
         let timestamp = self.current_timestamp;
         self.current_timestamp -= timestamp_delta;
 
-        let value_change: ValueChange<QitSlice<'a>> = self.value_changes.get_at(self.qits, self.current_value_change_offset);
+        let value_change: ValueChange<QitSlice<'a>> = self
+            .value_changes
+            .get_at(self.qits, self.current_value_change_offset);
 
         self.current_value_change_offset -= value_change.offset_to_prev;
         self.current_timestamp_offset -= value_change.offset_to_prev_timestamp;
@@ -420,7 +458,6 @@ impl ExactSizeIterator for ReverseValueChangeIter<'_> {
         self.remaining as _
     }
 }
-
 
 pub struct VcdLoader {}
 
@@ -439,7 +476,10 @@ impl WaveformLoader for VcdLoader {
         "the Value Change Dump (VCD) loader".to_string()
     }
 
-    fn load_file(&self, path: &std::path::Path) -> anyhow::Result<Box<dyn crate::db::WaveformDatabase>> {
+    fn load_file(
+        &self,
+        path: &std::path::Path,
+    ) -> anyhow::Result<Box<dyn crate::db::WaveformDatabase>> {
         let f = File::open(&path)?;
         let map = unsafe { mapr::Mmap::map(&f) };
 
@@ -448,7 +488,7 @@ impl WaveformLoader for VcdLoader {
             Ok(map) => VcdConverter::load_vcd(&map[..])?,
             Err(_) => {
                 println!("mmap failed, attempting to load file as a stream");
-                
+
                 // VcdConverter::load_vcd(BufReader::with_capacity(1_000_000, f))?
                 return self.load_stream(Box::new(f));
             }
@@ -457,24 +497,55 @@ impl WaveformLoader for VcdLoader {
         println!("contains {} variables", converter.var_tree.variables.len());
         let (&example_var_id, var_info) = converter.var_tree.variables.iter().nth(4).unwrap();
         let mut reverse_value_changes = converter.iter_reverse_value_change(example_var_id);
-        println!("variable \"{}\" ({}) has {} value changes", var_info.name, example_var_id, reverse_value_changes.len());
-        println!("last value change: {:?}", reverse_value_changes.next().unwrap());
-        println!("second to last value change: {:?}", reverse_value_changes.next().unwrap());
-        println!("third to last value change: {:?}", reverse_value_changes.next().unwrap());
+        println!(
+            "variable \"{}\" ({}) has {} value changes",
+            var_info.name,
+            example_var_id,
+            reverse_value_changes.len()
+        );
+        println!(
+            "last value change: {:?}",
+            reverse_value_changes.next().unwrap()
+        );
+        println!(
+            "second to last value change: {:?}",
+            reverse_value_changes.next().unwrap()
+        );
+        println!(
+            "third to last value change: {:?}",
+            reverse_value_changes.next().unwrap()
+        );
 
         Err(anyhow!("not yet implemented"))
     }
 
-    fn load_stream(&self, reader: Box<dyn Read>) -> anyhow::Result<Box<dyn crate::db::WaveformDatabase>> {
+    fn load_stream<'a>(
+        &self,
+        reader: Box<dyn Read + 'a>,
+    ) -> anyhow::Result<Box<dyn crate::db::WaveformDatabase>> {
         let converter = VcdConverter::load_vcd(BufReader::with_capacity(1_000_000, reader))?;
 
         println!("contains {} variables", converter.var_tree.variables.len());
         let (&example_var_id, var_info) = converter.var_tree.variables.iter().nth(4).unwrap();
         let mut reverse_value_changes = converter.iter_reverse_value_change(example_var_id);
-        println!("variable \"{}\" ({}) has {} value changes", var_info.name, example_var_id, reverse_value_changes.len());
-        println!("last value change: {:?}", reverse_value_changes.next().unwrap());
-        println!("second to last value change: {:?}", reverse_value_changes.next().unwrap());
-        println!("third to last value change: {:?}", reverse_value_changes.next().unwrap());
+        println!(
+            "variable \"{}\" ({}) has {} value changes",
+            var_info.name,
+            example_var_id,
+            reverse_value_changes.len()
+        );
+        println!(
+            "last value change: {:?}",
+            reverse_value_changes.next().unwrap()
+        );
+        println!(
+            "second to last value change: {:?}",
+            reverse_value_changes.next().unwrap()
+        );
+        println!(
+            "third to last value change: {:?}",
+            reverse_value_changes.next().unwrap()
+        );
 
         Err(anyhow!("not yet implemented"))
     }

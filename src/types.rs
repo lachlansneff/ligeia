@@ -42,7 +42,7 @@ macro_rules! define_item_containers {
         impl<'a> IntoIterator for $slice_name<'a> {
             type Item = $item;
             type IntoIter = $iter<'a>;
-            
+
             fn into_iter(self) -> Self::IntoIter {
                 $iter {
                     size: self.size,
@@ -51,7 +51,7 @@ macro_rules! define_item_containers {
                 }
             }
         }
-        
+
         pub struct $iter<'a> {
             size: usize,
             index: usize,
@@ -66,7 +66,7 @@ macro_rules! define_item_containers {
                     let in_index = (self.index * $bits_per_item) % 8;
                     let bit = (byte & ($mask << in_index)) >> in_index;
                     self.index += 1;
-        
+
                     Some(match bit {
                         $(
                             $bits => $item_variant,
@@ -112,12 +112,18 @@ macro_rules! define_item_containers {
                     data: data.into(),
                 }
             }
-            
+
             pub fn as_slice(&self) -> $slice_name {
                 $slice_name {
                     size: self.size,
                     data: &*self.data,
                 }
+            }
+        }
+
+        impl SizeInBytes for $vec_name {
+            fn size_in_bytes(count: usize) -> usize {
+                (count + (8 / $bits_per_item) - 1) / (8 / $bits_per_item)
             }
         }
 
@@ -149,13 +155,16 @@ pub enum Bit {
     One = 1,
 }
 
-impl Bit {
-    pub fn bits_to_bytes(bits: usize) -> usize {
-        (bits + 8 - 1) / 8
-    }
-}
-
-define_item_containers!(BitSlice, BitIter, BitVec, 0b1, Bit, 1, "b", [(Bit::Zero, 0, "0"), (Bit::One, 1, "1")]);
+define_item_containers!(
+    BitSlice,
+    BitIter,
+    BitVec,
+    0b1,
+    Bit,
+    1,
+    "b",
+    [(Bit::Zero, 0, "0"), (Bit::One, 1, "1")]
+);
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Qit {
@@ -171,5 +180,18 @@ impl Qit {
     }
 }
 
-define_item_containers!(QitSlice, QitIter, QitVec, 0b11, Qit, 2, "q", [(Qit::Zero, 0, "0"), (Qit::One, 1, "1"), (Qit::X, 2, "x"), (Qit::Z, 3, "z")]);
-
+define_item_containers!(
+    QitSlice,
+    QitIter,
+    QitVec,
+    0b11,
+    Qit,
+    2,
+    "q",
+    [
+        (Qit::Zero, 0, "0"),
+        (Qit::One, 1, "1"),
+        (Qit::X, 2, "x"),
+        (Qit::Z, 3, "z")
+    ]
+);

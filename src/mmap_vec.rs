@@ -1,5 +1,5 @@
-use std::{fs::File, io, marker::PhantomData, mem, ops::{Deref, DerefMut}, slice};
-use mapr::{MmapOptions, MmapMut};
+use mapr::{MmapMut, MmapOptions};
+use std::{fs::File, io, marker::PhantomData};
 
 pub trait WriteData<Parent: VariableLength = Self> {
     /// Maximum possible length (in bytes). Should be small.
@@ -61,9 +61,7 @@ impl<T: VariableLength> VarMmapVec<T> {
 
         f.set_len(cap)?;
 
-        let mapping = MmapOptions::new()
-            .len(cap as usize)
-            .map_mut(&f)?;
+        let mapping = MmapOptions::new().len(cap as usize).map_mut(&f)?;
 
         let count = &mut *(mapping.as_ptr() as *mut u64);
 
@@ -77,33 +75,33 @@ impl<T: VariableLength> VarMmapVec<T> {
         })
     }
 
-    unsafe fn create_with_capacity(cap: usize) -> io::Result<Self> {
-        let f = tempfile::tempfile()?;
+    // unsafe fn create_with_capacity(cap: usize) -> io::Result<Self> {
+    //     let f = tempfile::tempfile()?;
 
-        let cap = (cap as u64 + 4096 - 1) & !(4096 - 1);
+    //     let cap = (cap as u64 + 4096 - 1) & !(4096 - 1);
 
-        f.set_len(cap)?;
+    //     f.set_len(cap)?;
 
-        let mapping = MmapOptions::new()
-            .len(cap as usize)
-            .map_mut(&f)?;
+    //     let mapping = MmapOptions::new()
+    //         .len(cap as usize)
+    //         .map_mut(&f)?;
 
-        let count = &mut *(mapping.as_ptr() as *mut u64);
+    //     let count = &mut *(mapping.as_ptr() as *mut u64);
 
-        Ok(Self {
-            f,
-            mapping,
-            count,
-            bytes: 16,
-            cap: cap as usize,
-            _marker: PhantomData,
-        })
-    }
+    //     Ok(Self {
+    //         f,
+    //         mapping,
+    //         count,
+    //         bytes: 16,
+    //         cap: cap as usize,
+    //         _marker: PhantomData,
+    //     })
+    // }
 
     /// Returns offset of item in buffer.
-    pub fn push<Data>(&mut self, meta: T::Meta, mut data: Data) -> u64
+    pub fn push<Data>(&mut self, meta: T::Meta, data: Data) -> u64
     where
-        Data: WriteData<T>
+        Data: WriteData<T>,
     {
         if self.bytes + Data::max_size(meta) >= self.cap {
             self.realloc();
@@ -123,7 +121,9 @@ impl<T: VariableLength> VarMmapVec<T> {
     #[cold]
     fn realloc(&mut self) {
         self.cap *= 2;
-        self.f.set_len(self.cap as u64).expect("failed to extend file");
+        self.f
+            .set_len(self.cap as u64)
+            .expect("failed to extend file");
         let mapping = unsafe {
             MmapOptions::new()
                 .len(self.cap)
@@ -142,15 +142,15 @@ impl<T: VariableLength> VarMmapVec<T> {
     //     }
     // }
 
-    pub fn flush(&self) {
-        self.mapping.flush().expect("failed to flush mapping");
-    }
+    // pub fn flush(&self) {
+    //     self.mapping.flush().expect("failed to flush mapping");
+    // }
 
     /// This will return garbage if the offset is not aligned to the beginning
     /// of a variable-length item.
     pub fn get_at<'a, Data>(&'a self, meta: T::Meta, offset: u64) -> Data
     where
-        Data: ReadData<'a, T>
+        Data: ReadData<'a, T>,
     {
         // T::from_bytes(&mut &self.mapping[offset..])
         Data::read_data(meta, &self.mapping[offset as usize..]).0
@@ -251,7 +251,7 @@ impl<T: VariableLength> VarMmapVec<T> {
 
 // impl<T: Pod> Deref for MmapVec<T> {
 //     type Target = [T];
-    
+
 //     fn deref(&self) -> &Self::Target {
 //         let slice = &self.inner.mapping[16..];
 //         unsafe {
