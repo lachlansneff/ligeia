@@ -50,7 +50,10 @@ impl VariableLength for u32 {
     type DefaultReadData = Self;
 }
 
-pub trait WaveformDatabase: Send {}
+pub trait WaveformDatabase: Send {
+    /// Femtoseconds per timestep
+    fn timescale(&self) -> u32;
+}
 
 pub trait WaveformLoader: Sync {
     fn supports_file_extension(&self, s: &str) -> bool;
@@ -59,10 +62,7 @@ pub trait WaveformLoader: Sync {
     /// A file is technically a stream, but generally, specializing parsers for files can be more efficient than parsing
     /// from a generic reader.
     fn load_file(&self, path: &Path) -> anyhow::Result<Box<dyn WaveformDatabase>>;
-    fn load_stream<'a>(
-        &self,
-        reader: Box<dyn Read + 'a>,
-    ) -> anyhow::Result<Box<dyn WaveformDatabase>>;
+    fn load_stream(&self, reader: Box<dyn Read + '_>) -> anyhow::Result<Box<dyn WaveformDatabase>>;
 }
 
 // const NODE_CHILDREN: usize = 8;

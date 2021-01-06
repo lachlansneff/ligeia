@@ -11,6 +11,7 @@ use structopt::StructOpt;
 
 mod db;
 mod mmap_vec;
+mod progress;
 mod svcb;
 mod types;
 mod vcd;

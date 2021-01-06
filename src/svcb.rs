@@ -1,8 +1,4 @@
-use crate::{
-    db::WaveformLoader,
-    mmap_vec::{VarMmapVec, VariableLength, WriteData},
-    types::{BitSlice, BitVec, QitSlice, SizeInBytes},
-};
+use crate::{db::{WaveformDatabase, WaveformLoader}, mmap_vec::{VarMmapVec, VariableLength, WriteData}, types::{BitSlice, BitVec, QitSlice, SizeInBytes}};
 use anyhow::anyhow;
 use std::{
     collections::HashMap,
@@ -527,6 +523,8 @@ pub struct SvcbConverter {
 
     value_changes: VarMmapVec<ValueChangeProxy>,
     // var_tree: VarTree,
+    /// femtoseconds per timestep
+    timescale: u32,
 }
 
 impl SvcbConverter {
@@ -537,7 +535,7 @@ impl SvcbConverter {
             }
         }
 
-        let (mut input, _header) = Header::parse(input)?;
+        let (mut input, header) = Header::parse(input)?;
 
         let mut storages: HashMap<u32, (StorageMeta, StorageDeclaration), ahash::RandomState> =
             HashMap::default();
@@ -684,6 +682,7 @@ impl SvcbConverter {
             timestamp_chain,
             value_changes,
             // var_tree: todo!(),
+            timescale: header.timescale,
         })
     }
 
@@ -691,24 +690,28 @@ impl SvcbConverter {
         use circular::Buffer;
 
         struct Eof;
-        fn complete<F, R>(reader: &mut R, b: &mut Buffer, mut f: F) -> Result<Option<Eof>, Error>
+        fn complete<F, R, T>(
+            reader: &mut R,
+            b: &mut Buffer,
+            mut f: F,
+        ) -> Result<(Option<Eof>, T), Error>
         where
-            F: FnMut(&[u8]) -> Result<&[u8], Error>,
+            F: FnMut(&[u8]) -> Result<(&[u8], T), Error>,
             R: Read,
         {
             loop {
                 let i = b.data();
                 let orig_len = i.len();
                 match f(i) {
-                    Ok(i2) => {
+                    Ok((i2, x)) => {
                         let len = i2.len();
                         b.consume(orig_len - len);
                         let sz = reader.read(b.space())?;
                         b.fill(sz);
                         break Ok(if b.available_data() == 0 {
-                            Some(Eof)
+                            (Some(Eof), x)
                         } else {
-                            None
+                            (None, x)
                         });
                     }
                     Err(Error::Incomplete(needed)) => {
@@ -729,10 +732,7 @@ impl SvcbConverter {
 
         let mut b = Buffer::with_capacity(1_000_000);
 
-        complete(&mut reader, &mut b, |input| {
-            let (i, _header) = Header::parse(input)?;
-            Ok(i)
-        })?;
+        let (_, header) = complete(&mut reader, &mut b, |input| Header::parse(input))?;
 
         let mut storages: HashMap<u32, (StorageMeta, StorageDeclaration), ahash::RandomState> =
             HashMap::default();
@@ -747,7 +747,7 @@ impl SvcbConverter {
         let mut number_of_timestamps = 0;
 
         loop {
-            let maybe_eof = complete(&mut reader, &mut b, |i| {
+            let (maybe_eof, _) = complete(&mut reader, &mut b, |i| {
                 let (i, block_type) = u8::parse(i)?;
 
                 let i = match block_type {
@@ -866,7 +866,7 @@ impl SvcbConverter {
                     }
                 };
 
-                Ok(i)
+                Ok((i, ()))
             })?;
 
             if let Some(Eof) = maybe_eof {
@@ -888,6 +888,7 @@ impl SvcbConverter {
             timestamp_chain,
             value_changes,
             // var_tree: todo!(),
+            timescale: header.timescale,
         })
     }
 }
@@ -912,7 +913,7 @@ impl WaveformLoader for SvcbLoader {
     fn load_file(
         &self,
         path: &std::path::Path,
-    ) -> anyhow::Result<Box<dyn crate::db::WaveformDatabase>> {
+    ) -> anyhow::Result<Box<dyn WaveformDatabase>> {
         let f = File::open(&path)?;
         let map = unsafe { mapr::Mmap::map(&f) };
         // let converter = SvcbConverter::load_svcb(&map[..]);
@@ -929,10 +930,10 @@ impl WaveformLoader for SvcbLoader {
         Err(anyhow!("not yet implemented"))
     }
 
-    fn load_stream<'a>(
+    fn load_stream(
         &self,
-        reader: Box<dyn io::Read + 'a>,
-    ) -> anyhow::Result<Box<dyn crate::db::WaveformDatabase>> {
+        reader: Box<dyn io::Read + '_>,
+    ) -> anyhow::Result<Box<dyn WaveformDatabase>> {
         let converter = SvcbConverter::load_svcb_stream(reader)?;
 
         Err(anyhow!(

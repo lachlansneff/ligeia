@@ -12,11 +12,7 @@ use anyhow::anyhow;
 use io::BufReader;
 use vcd::{Command, Parser, ScopeItem};
 
-use crate::{
-    db::WaveformLoader,
-    mmap_vec::{ReadData, VarMmapVec, VariableLength, WriteData},
-    types::{Qit, QitSlice},
-};
+use crate::{db::{WaveformDatabase, WaveformLoader}, mmap_vec::{ReadData, VarMmapVec, VariableLength, WriteData}, types::{Qit, QitSlice}};
 
 struct NotValidVarIdError(());
 
@@ -459,6 +455,8 @@ impl ExactSizeIterator for ReverseValueChangeIter<'_> {
     }
 }
 
+struct VcdDb {}
+
 pub struct VcdLoader {}
 
 impl VcdLoader {
@@ -479,7 +477,7 @@ impl WaveformLoader for VcdLoader {
     fn load_file(
         &self,
         path: &std::path::Path,
-    ) -> anyhow::Result<Box<dyn crate::db::WaveformDatabase>> {
+    ) -> anyhow::Result<Box<dyn WaveformDatabase>> {
         let f = File::open(&path)?;
         let map = unsafe { mapr::Mmap::map(&f) };
 
@@ -519,10 +517,10 @@ impl WaveformLoader for VcdLoader {
         Err(anyhow!("not yet implemented"))
     }
 
-    fn load_stream<'a>(
+    fn load_stream(
         &self,
-        reader: Box<dyn Read + 'a>,
-    ) -> anyhow::Result<Box<dyn crate::db::WaveformDatabase>> {
+        reader: Box<dyn Read + '_>,
+    ) -> anyhow::Result<Box<dyn WaveformDatabase>> {
         let converter = VcdConverter::load_vcd(BufReader::with_capacity(1_000_000, reader))?;
 
         println!("contains {} variables", converter.var_tree.variables.len());
