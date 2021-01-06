@@ -16,7 +16,7 @@ use anyhow::anyhow;
 use io::BufReader;
 use vcd::{Command, Parser, ScopeItem};
 
-use crate::{db::{WaveformDatabase, WaveformLoader}, mmap_vec::{ReadData, VarMmapVec, VariableLength, WriteData}, types::{Qit, QitSlice}};
+use crate::{db::{WaveformDatabase, WaveformLoader}, mmap_vec::{ReallocDisabled, VarMmapVec, VariableLength, VariableRead, VariableWrite}, types::{Qit, QitSlice}};
 
 struct NotValidVarIdError(());
 
@@ -69,19 +69,19 @@ impl Display for VarId {
     }
 }
 
-impl WriteData for VarId {
+impl VariableWrite for VarId {
     #[inline]
     fn max_size(_: ()) -> usize {
         10
     }
 
-    fn write_bytes(self, _: (), b: &mut [u8]) -> usize {
+    fn write_variable(self, _: (), b: &mut [u8]) -> usize {
         // leb128::write::unsigned(&mut b, self.0.get()).unwrap()
         varint_simd::encode_to_slice(self.0.get(), b) as usize
     }
 }
-impl ReadData<'_> for VarId {
-    fn read_data(_: (), b: &[u8]) -> (Self, usize) {
+impl VariableRead<'_> for VarId {
+    fn read_variable(_: (), b: &[u8]) -> (Self, usize) {
         let (int, size) = varint_simd::decode(b).unwrap();
         (VarId(unsafe { NonZeroU64::new_unchecked(int) }), size as _)
     }
@@ -219,18 +219,18 @@ struct ValueChange<T: WriteQits> {
     qits: T,
 }
 
-impl<T: WriteQits> WriteData<ValueChangeProxy> for ValueChange<T> {
+impl<T: WriteQits> VariableWrite<ValueChangeProxy> for ValueChange<T> {
     #[inline]
     fn max_size(qits: usize) -> usize {
-        <u64 as WriteData>::max_size(()) * 3 + Qit::bits_to_bytes(qits)
+        <u64 as VariableWrite>::max_size(()) * 3 + Qit::bits_to_bytes(qits)
     }
 
-    fn write_bytes(self, qits: usize, mut b: &mut [u8]) -> usize {
-        let mut header = self.var_id.write_bytes((), &mut b);
-        header += self.offset_to_prev.write_bytes((), &mut b[header..]);
+    fn write_variable(self, qits: usize, mut b: &mut [u8]) -> usize {
+        let mut header = self.var_id.write_variable((), &mut b);
+        header += self.offset_to_prev.write_variable((), &mut b[header..]);
         header += self
             .offset_to_prev_timestamp
-            .write_bytes((), &mut b[header..]);
+            .write_variable((), &mut b[header..]);
 
         let bytes = Qit::bits_to_bytes(qits);
 
@@ -239,12 +239,12 @@ impl<T: WriteQits> WriteData<ValueChangeProxy> for ValueChange<T> {
         header + bytes
     }
 }
-impl<'a> ReadData<'a, ValueChangeProxy> for ValueChange<QitSlice<'a>> {
-    fn read_data(qits: usize, b: &'a [u8]) -> (Self, usize) {
-        let (var_id, mut offset) = VarId::read_data((), b);
-        let (offset_to_prev, size) = u64::read_data((), &b[offset..]);
+impl<'a> VariableRead<'a, ValueChangeProxy> for ValueChange<QitSlice<'a>> {
+    fn read_variable(qits: usize, b: &'a [u8]) -> (Self, usize) {
+        let (var_id, mut offset) = VarId::read_variable((), b);
+        let (offset_to_prev, size) = u64::read_variable((), &b[offset..]);
         offset += size;
-        let (offset_to_prev_timestamp, size) = u64::read_data((), &b[offset..]);
+        let (offset_to_prev_timestamp, size) = u64::read_variable((), &b[offset..]);
         offset += size;
 
         let bytes = Qit::bits_to_bytes(qits);
@@ -289,6 +289,7 @@ struct VcdConverter {
     value_change: VarMmapVec<ValueChangeProxy>,
 
     var_tree: VarTree,
+    timescale: Option<(u32, vcd::TimescaleUnit)>,
 }
 
 impl VcdConverter {
@@ -296,6 +297,7 @@ impl VcdConverter {
         let mut parser = Parser::new(reader);
         let header = parser.parse_header()?;
 
+        let timescale = header.timescale;
         let var_tree = find_all_scopes_and_variables(header);
 
         let mut var_metas = HashMap::with_capacity_and_hasher(
@@ -396,6 +398,7 @@ impl VcdConverter {
             timestamp_chain,
             value_change,
             var_tree,
+            timescale,
         })
     }
 
@@ -412,6 +415,59 @@ impl VcdConverter {
             remaining: var_meta.number_of_value_changes,
             qits: var_meta.qits as usize,
         }
+    }
+
+    /// Single-threaded for now, but this is probably possible to multi-thread.
+    fn into_db(self) -> io::Result<VcdDb> {
+        // Count up the sizes necessary for the averaged-value forest.
+        // There's probably a significantly more efficient way of doing this.
+        let total_size = self.var_metas.iter().map(|(var_id, var_meta)| {
+            let value_size = Qit::bits_to_bytes(var_meta.qits as _);
+            let mut count_on_layer = var_meta.number_of_value_changes as usize;
+            let mut layers = 0;
+            let mut acc = 0;
+            loop {
+                acc += count_on_layer * value_size;
+                layers += 1;
+
+                if count_on_layer < 1024 {
+                    break
+                }
+
+                count_on_layer /= 4;
+            }
+
+            println!("variable {} with {} value changes fits in {} layers with {} items on the top layer",
+                var_id, var_meta.number_of_value_changes, layers, count_on_layer);
+
+            acc
+        }).sum();
+
+        println!("total size: {} bytes", total_size);
+
+        let mut forest: VarMmapVec<QitSliceProxy, ReallocDisabled> = VarMmapVec::create_with_capacity(total_size)?;
+
+        for (&var_id, var_meta) in &self.var_metas {
+            let value_change_iter = self.iter_reverse_value_change(var_id);
+
+        }
+        
+        let femtoseconds_per_timestep = if let Some((timesteps, unit)) = self.timescale {
+            timesteps as u128 * match unit {
+                vcd::TimescaleUnit::S => 1_000_000_000_000_000, // 1e15
+                vcd::TimescaleUnit::MS => 1_000_000_000_000, // 1e12
+                vcd::TimescaleUnit::US => 1_000_000_000, // 1e9
+                vcd::TimescaleUnit::NS => 1_000_000, // 1e6
+                vcd::TimescaleUnit::PS => 1_000,
+                vcd::TimescaleUnit::FS => 1,
+            }
+        } else {
+            1
+        };
+
+        Ok(VcdDb {
+            femtoseconds_per_timestep,
+        })
     }
 }
 
@@ -459,7 +515,43 @@ impl ExactSizeIterator for ReverseValueChangeIter<'_> {
     }
 }
 
-struct VcdDb {}
+enum QitSliceProxy {}
+
+impl<'a> VariableWrite<QitSliceProxy> for QitSlice<'a> {
+    fn max_size(qits: usize) -> usize {
+        // (qits as usize + 4 - 1) / 4
+        Qit::bits_to_bytes(qits)
+    }
+
+    fn write_variable(self, qits: usize, b: &mut [u8]) -> usize {
+        let bytes = (qits as usize + 8 - 1) / 8;
+
+        self.write_qits(&mut b[..bytes]);
+
+        bytes
+    }
+}
+impl<'a> VariableRead<'a, QitSliceProxy> for QitSlice<'a> {
+    fn read_variable(qits: usize, b: &'a [u8]) -> (Self, usize) {
+        let bytes = Self::max_size(qits);
+        (QitSlice::new(qits, &b[..bytes]), bytes)
+    }
+}
+
+impl VariableLength for QitSliceProxy {
+    type Meta = usize;
+    type DefaultReadData = ();
+}
+
+struct VcdDb {
+    femtoseconds_per_timestep: u128,
+}
+
+impl WaveformDatabase for VcdDb {
+    fn timescale(&self) -> u128 {
+        self.femtoseconds_per_timestep
+    }
+}
 
 pub struct VcdLoader {}
 
@@ -482,7 +574,7 @@ impl WaveformLoader for VcdLoader {
         &self,
         path: &std::path::Path,
     ) -> anyhow::Result<Box<dyn WaveformDatabase>> {
-        let f = File::open(&path)?;
+        let mut f = File::open(&path)?;
         let map = unsafe { mapr::Mmap::map(&f) };
 
         // let converter = VcdConverter::load_vcd(&map[..])?;
@@ -492,7 +584,7 @@ impl WaveformLoader for VcdLoader {
                 println!("mmap failed, attempting to load file as a stream");
 
                 // VcdConverter::load_vcd(BufReader::with_capacity(1_000_000, f))?
-                return self.load_stream(Box::new(f));
+                return self.load_stream(&mut f);
             }
         };
 
@@ -518,12 +610,14 @@ impl WaveformLoader for VcdLoader {
             reverse_value_changes.next().unwrap()
         );
 
+        let db = converter.into_db()?;
+
         Err(anyhow!("not yet implemented"))
     }
 
     fn load_stream(
         &self,
-        reader: Box<dyn Read + '_>,
+        reader: &mut dyn Read,
     ) -> anyhow::Result<Box<dyn WaveformDatabase>> {
         let converter = VcdConverter::load_vcd(BufReader::with_capacity(1_000_000, reader))?;
 

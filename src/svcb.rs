@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use crate::{db::{WaveformDatabase, WaveformLoader}, mmap_vec::{VarMmapVec, VariableLength, WriteData}, types::{BitSlice, BitVec, QitSlice, SizeInBytes}};
+use crate::{db::{WaveformDatabase, WaveformLoader}, mmap_vec::{VarMmapVec, VariableLength, VariableWrite}, types::{BitSlice, BitVec, QitSlice, SizeInBytes}};
 use anyhow::anyhow;
 use std::{
     collections::HashMap,
@@ -105,6 +105,17 @@ impl<'i> Parse<'i> for u32 {
     }
 }
 
+impl<'i> Parse<'i> for u128 {
+    fn parse(i: &[u8]) -> ParseResult<Self> {
+        if i.len() < 16 {
+            Err(Error::Incomplete(NonZeroUsize::new(16 - i.len())))
+        } else {
+            let (bytes, rest) = i.split_at(16);
+            Ok((rest, u128::from_le_bytes(bytes.try_into().unwrap())))
+        }
+    }
+}
+
 pub struct Varu32;
 pub struct Varu64;
 
@@ -176,7 +187,7 @@ pub struct Header {
     magic: [u8; 4],
     version: u32,
     /// Femtoseconds per timestep.
-    timescale: u32,
+    timescale: u128,
 }
 
 impl Parse<'_> for Header {
@@ -192,7 +203,7 @@ impl Parse<'_> for Header {
             return Err(Error::Failure(Reason::InvalidVersion));
         }
 
-        let (i, timescale) = u32::parse(i)?;
+        let (i, timescale) = u128::parse(i)?;
 
         Ok((
             i,
@@ -459,20 +470,20 @@ struct ValueChangeData<T> {
 
 enum ValueChangeProxy {}
 
-impl<T: AsRef<[u8]> + SizeInBytes> WriteData<ValueChangeProxy> for ValueChangeData<T> {
+impl<T: AsRef<[u8]> + SizeInBytes> VariableWrite<ValueChangeProxy> for ValueChangeData<T> {
     #[inline]
     fn max_size(length: usize) -> usize {
-        <u32 as WriteData>::max_size(())
-            + <u64 as WriteData>::max_size(()) * 2
+        <u32 as VariableWrite>::max_size(())
+            + <u64 as VariableWrite>::max_size(()) * 2
             + T::size_in_bytes(length)
     }
 
-    fn write_bytes(self, length: usize, mut b: &mut [u8]) -> usize {
-        let mut header = self.storage_id.write_bytes((), &mut b);
-        header += self.offset_to_prev.write_bytes((), &mut b[header..]);
+    fn write_variable(self, length: usize, mut b: &mut [u8]) -> usize {
+        let mut header = self.storage_id.write_variable((), &mut b);
+        header += self.offset_to_prev.write_variable((), &mut b[header..]);
         header += self
             .offset_to_prev_timestamp
-            .write_bytes((), &mut b[header..]);
+            .write_variable((), &mut b[header..]);
 
         let bytes = T::size_in_bytes(length);
 
@@ -528,7 +539,7 @@ pub struct SvcbConverter {
     value_changes: VarMmapVec<ValueChangeProxy>,
     // var_tree: VarTree,
     /// femtoseconds per timestep
-    timescale: u32,
+    timescale: u128,
 }
 
 impl SvcbConverter {
@@ -918,7 +929,7 @@ impl WaveformLoader for SvcbLoader {
         &self,
         path: &std::path::Path,
     ) -> anyhow::Result<Box<dyn WaveformDatabase>> {
-        let f = File::open(&path)?;
+        let mut f = File::open(&path)?;
         let map = unsafe { mapr::Mmap::map(&f) };
         // let converter = SvcbConverter::load_svcb(&map[..]);
 
@@ -927,7 +938,7 @@ impl WaveformLoader for SvcbLoader {
             Err(_) => {
                 println!("mmap failed, attempting to load file as a stream");
 
-                return self.load_stream(Box::new(f));
+                return self.load_stream(&mut f);
             }
         };
 
@@ -936,7 +947,7 @@ impl WaveformLoader for SvcbLoader {
 
     fn load_stream(
         &self,
-        reader: Box<dyn io::Read + '_>,
+        reader: &mut dyn io::Read,
     ) -> anyhow::Result<Box<dyn WaveformDatabase>> {
         let converter = SvcbConverter::load_svcb_stream(reader)?;
 

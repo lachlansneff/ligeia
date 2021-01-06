@@ -5,14 +5,14 @@
 use mapr::{MmapMut, MmapOptions};
 use std::{fs::File, io, marker::PhantomData};
 
-pub trait WriteData<Parent: VariableLength = Self> {
+pub trait VariableWrite<Parent: VariableLength = Self> {
     /// Maximum possible length (in bytes). Should be small.
     fn max_size(meta: <Parent as VariableLength>::Meta) -> usize;
-    fn write_bytes(self, meta: <Parent as VariableLength>::Meta, b: &mut [u8]) -> usize;
+    fn write_variable(self, meta: <Parent as VariableLength>::Meta, b: &mut [u8]) -> usize;
 }
 
-pub trait ReadData<'a, Parent: VariableLength = Self>: Sized {
-    fn read_data(meta: <Parent as VariableLength>::Meta, b: &'a [u8]) -> (Self, usize);
+pub trait VariableRead<'a, Parent: VariableLength = Self>: Sized {
+    fn read_variable(meta: <Parent as VariableLength>::Meta, b: &'a [u8]) -> (Self, usize);
 }
 
 // default impl<T: VariableLength> WriteData for T {
@@ -45,29 +45,42 @@ pub trait VariableLength {
     // }
 }
 
+pub enum ReallocEnabled {}
+pub enum ReallocDisabled {}
+
+pub trait ReallocOption {
+    const ENABLED: bool;
+}
+impl ReallocOption for ReallocEnabled {
+    const ENABLED: bool = true;
+}
+impl ReallocOption for ReallocDisabled {
+    const ENABLED: bool = false;
+}
+
 /// Creates an appendable vector that's backed by
 /// an anonymous, temporary file, so it can contain more data than
 /// fits in physical memory.
-pub struct VarMmapVec<T> {
+pub struct VarMmapVec<T, Realloc: ReallocOption = ReallocEnabled> {
     f: File,
     mapping: MmapMut,
     count: &'static mut u64,
     bytes: usize,
     cap: usize,
-    _marker: PhantomData<T>,
+    _marker: PhantomData<(T, Realloc)>,
 }
 
-impl<T: VariableLength> VarMmapVec<T> {
-    pub unsafe fn create() -> io::Result<Self> {
+impl<T: VariableLength, Realloc: ReallocOption> VarMmapVec<T, Realloc> {
+    pub fn create() -> io::Result<Self> {
         let f = tempfile::tempfile()?;
 
         let cap = 4096; // Let's try a single page to start.
 
         f.set_len(cap)?;
 
-        let mapping = MmapOptions::new().len(cap as usize).map_mut(&f)?;
+        let mapping = unsafe { MmapOptions::new().len(cap as usize).map_mut(&f)? };
 
-        let count = &mut *(mapping.as_ptr() as *mut u64);
+        let count = unsafe { &mut *(mapping.as_ptr() as *mut u64) };
 
         Ok(Self {
             f,
@@ -79,33 +92,33 @@ impl<T: VariableLength> VarMmapVec<T> {
         })
     }
 
-    // unsafe fn create_with_capacity(cap: usize) -> io::Result<Self> {
-    //     let f = tempfile::tempfile()?;
+    pub fn create_with_capacity(cap: usize) -> io::Result<Self> {
+        let f = tempfile::tempfile()?;
 
-    //     let cap = (cap as u64 + 4096 - 1) & !(4096 - 1);
+        let cap = (cap as u64 + 4096 - 1) & !(4096 - 1);
 
-    //     f.set_len(cap)?;
+        f.set_len(cap)?;
 
-    //     let mapping = MmapOptions::new()
-    //         .len(cap as usize)
-    //         .map_mut(&f)?;
+        let mapping = unsafe { MmapOptions::new()
+            .len(cap as usize)
+            .map_mut(&f)? };
 
-    //     let count = &mut *(mapping.as_ptr() as *mut u64);
+        let count = unsafe { &mut *(mapping.as_ptr() as *mut u64) };
 
-    //     Ok(Self {
-    //         f,
-    //         mapping,
-    //         count,
-    //         bytes: 16,
-    //         cap: cap as usize,
-    //         _marker: PhantomData,
-    //     })
-    // }
+        Ok(Self {
+            f,
+            mapping,
+            count,
+            bytes: 16,
+            cap: cap as usize,
+            _marker: PhantomData,
+        })
+    }
 
     /// Returns offset of item in buffer.
     pub fn push<Data>(&mut self, meta: T::Meta, data: Data) -> u64
     where
-        Data: WriteData<T>,
+        Data: VariableWrite<T>,
     {
         if self.bytes + Data::max_size(meta) >= self.cap {
             self.realloc();
@@ -113,7 +126,7 @@ impl<T: VariableLength> VarMmapVec<T> {
 
         let offset = self.bytes;
 
-        self.bytes += data.write_bytes(meta, &mut self.mapping[self.bytes..]);
+        self.bytes += data.write_variable(meta, &mut self.mapping[self.bytes..]);
         *self.count += 1;
         offset as _
     }
@@ -124,6 +137,10 @@ impl<T: VariableLength> VarMmapVec<T> {
 
     #[cold]
     fn realloc(&mut self) {
+        if !Realloc::ENABLED {
+            panic!("this instance of `VarMmapVec` is not allowed to reallocate");
+        }
+
         self.cap *= 2;
         self.f
             .set_len(self.cap as u64)
@@ -154,10 +171,10 @@ impl<T: VariableLength> VarMmapVec<T> {
     /// of a variable-length item.
     pub fn get_at<'a, Data>(&'a self, meta: T::Meta, offset: u64) -> Data
     where
-        Data: ReadData<'a, T>,
+        Data: VariableRead<'a, T>,
     {
         // T::from_bytes(&mut &self.mapping[offset..])
-        Data::read_data(meta, &self.mapping[offset as usize..]).0
+        Data::read_variable(meta, &self.mapping[offset as usize..]).0
     }
 }
 

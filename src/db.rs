@@ -4,21 +4,21 @@
 
 use std::{io::Read, path::Path};
 
-use crate::mmap_vec::{ReadData, VariableLength, WriteData};
+use crate::mmap_vec::{VariableRead, VariableLength, VariableWrite};
 
-impl WriteData for u64 {
+impl VariableWrite for u64 {
     #[inline]
     fn max_size(_: ()) -> usize {
         <u64 as varint_simd::num::VarIntTarget>::MAX_VARINT_BYTES as _
     }
 
-    fn write_bytes(self, _: (), b: &mut [u8]) -> usize {
+    fn write_variable(self, _: (), b: &mut [u8]) -> usize {
         // leb128::write::unsigned(&mut b, *self).unwrap()
         varint_simd::encode_to_slice(self, b) as usize
     }
 }
-impl ReadData<'_> for u64 {
-    fn read_data(_: (), b: &[u8]) -> (Self, usize) {
+impl VariableRead<'_> for u64 {
+    fn read_variable(_: (), b: &[u8]) -> (Self, usize) {
         varint_simd::decode(b)
             .map(|(int, size)| (int, size as _))
             .unwrap()
@@ -30,19 +30,19 @@ impl VariableLength for u64 {
     type DefaultReadData = Self;
 }
 
-impl WriteData for u32 {
+impl VariableWrite for u32 {
     #[inline]
     fn max_size(_: ()) -> usize {
         <u32 as varint_simd::num::VarIntTarget>::MAX_VARINT_BYTES as _
     }
 
-    fn write_bytes(self, _: (), b: &mut [u8]) -> usize {
+    fn write_variable(self, _: (), b: &mut [u8]) -> usize {
         // leb128::write::unsigned(&mut b, *self).unwrap()
         varint_simd::encode_to_slice(self, b) as usize
     }
 }
-impl ReadData<'_> for u32 {
-    fn read_data(_: (), b: &[u8]) -> (Self, usize) {
+impl VariableRead<'_> for u32 {
+    fn read_variable(_: (), b: &[u8]) -> (Self, usize) {
         varint_simd::decode(b)
             .map(|(int, size)| (int, size as _))
             .unwrap()
@@ -56,7 +56,7 @@ impl VariableLength for u32 {
 
 pub trait WaveformDatabase: Send {
     /// Femtoseconds per timestep
-    fn timescale(&self) -> u32;
+    fn timescale(&self) -> u128;
 }
 
 pub trait WaveformLoader: Sync {
@@ -66,7 +66,7 @@ pub trait WaveformLoader: Sync {
     /// A file is technically a stream, but generally, specializing parsers for files can be more efficient than parsing
     /// from a generic reader.
     fn load_file(&self, path: &Path) -> anyhow::Result<Box<dyn WaveformDatabase>>;
-    fn load_stream(&self, reader: Box<dyn Read + '_>) -> anyhow::Result<Box<dyn WaveformDatabase>>;
+    fn load_stream(&self, reader: &mut dyn Read) -> anyhow::Result<Box<dyn WaveformDatabase>>;
 }
 
 // const NODE_CHILDREN: usize = 8;

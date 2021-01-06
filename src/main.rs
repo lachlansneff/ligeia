@@ -60,7 +60,8 @@ fn run(loader: &'static dyn WaveformLoader, source: Source) -> anyhow::Result<()
             // Source::Reader(reader) => loader.load_stream(reader),
             Source::Stdin => {
                 let stdin = std::io::stdin();
-                loader.load_stream(Box::new(stdin.lock()))
+                let mut lock = stdin.lock();
+                loader.load_stream(&mut lock)
             }
         })
         .expect("failed to send on channel");

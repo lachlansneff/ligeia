@@ -94,6 +94,6 @@ svcb :=
     }
 
 rev-1 :=
-    timescale := u32, femtoseconds per timestep
+    timescale := u128, femtoseconds per timestep
     blocks := unsized-vec(block)
 
