@@ -908,6 +908,17 @@ impl SvcbConverter {
     }
 }
 
+pub struct SvcbDb {
+    /// femtoseconds per timestep
+    timescale: u128,
+}
+
+impl WaveformDatabase for SvcbDb {
+    fn timescale(&self) -> u128 {
+        self.timescale
+    }
+}
+
 pub struct SvcbLoader {}
 
 impl SvcbLoader {

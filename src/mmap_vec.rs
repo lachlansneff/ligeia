@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use mapr::{MmapMut, MmapOptions};
-use std::{fs::File, io, marker::PhantomData};
+use std::{fs::File, io, iter, marker::PhantomData, mem, slice::SliceIndex};
 
 pub trait VariableWrite<Parent: VariableLength = Self> {
     /// Maximum possible length (in bytes). Should be small.
@@ -26,23 +26,12 @@ pub trait VariableRead<'a, Parent: VariableLength = Self>: Sized {
 pub trait VariableLength {
     type Meta: Copy;
     type DefaultReadData;
+}
 
-    // fn max_size(meta: Self::Meta) -> usize;
-
-    // /// Returns number of bytes written.
-    // #[inline]
-    // fn write_bytes(mut data: impl WriteData<Self>, meta: Self::Meta, b: &mut [u8]) -> usize
-    //     where Self: Sized
-    // {
-    //     data.write_bytes(meta, b)
-    // }
-
-    // /// Reads from `b` as necessary.
-    // fn from_bytes<'a, Data: ReadData<'a, Self>>(meta: Self::Meta, b: &'a [u8]) -> (Data, usize)
-    //     where Self: Sized
-    // {
-    //     Data::read_data(meta, b)
-    // }
+/// This trait means that Self is variable-sized,
+/// but a consistent size while it's useful for the caller.
+pub trait ConsistentSize<Parent: VariableLength = Self> {
+    fn size(meta: <Parent as VariableLength>::Meta) -> usize;
 }
 
 pub enum ReallocEnabled {}
@@ -64,8 +53,7 @@ impl ReallocOption for ReallocDisabled {
 pub struct VarMmapVec<T, Realloc: ReallocOption = ReallocEnabled> {
     f: File,
     mapping: MmapMut,
-    count: &'static mut u64,
-    bytes: usize,
+    offset: usize,
     cap: usize,
     _marker: PhantomData<(T, Realloc)>,
 }
@@ -80,13 +68,10 @@ impl<T: VariableLength, Realloc: ReallocOption> VarMmapVec<T, Realloc> {
 
         let mapping = unsafe { MmapOptions::new().len(cap as usize).map_mut(&f)? };
 
-        let count = unsafe { &mut *(mapping.as_ptr() as *mut u64) };
-
         Ok(Self {
             f,
             mapping,
-            count,
-            bytes: 16,
+            offset: 0,
             cap: cap as usize,
             _marker: PhantomData,
         })
@@ -103,13 +88,10 @@ impl<T: VariableLength, Realloc: ReallocOption> VarMmapVec<T, Realloc> {
             .len(cap as usize)
             .map_mut(&f)? };
 
-        let count = unsafe { &mut *(mapping.as_ptr() as *mut u64) };
-
         Ok(Self {
             f,
             mapping,
-            count,
-            bytes: 16,
+            offset: 0,
             cap: cap as usize,
             _marker: PhantomData,
         })
@@ -120,20 +102,49 @@ impl<T: VariableLength, Realloc: ReallocOption> VarMmapVec<T, Realloc> {
     where
         Data: VariableWrite<T>,
     {
-        if self.bytes + Data::max_size(meta) >= self.cap {
+        if self.offset + Data::max_size(meta) >= self.cap {
             self.realloc();
         }
 
-        let offset = self.bytes;
+        let offset = self.offset;
 
-        self.bytes += data.write_variable(meta, &mut self.mapping[self.bytes..]);
-        *self.count += 1;
+        self.offset += data.write_variable(meta, &mut self.mapping[self.offset..]);
         offset as _
     }
 
-    pub fn current_offset(&self) -> u64 {
-        self.bytes as _
+    #[track_caller]
+    pub fn window<'a, B>(&mut self, bounds: B) -> VarVecWindow<T>
+    where
+        B: SliceIndex<[u8], Output = [u8]>,
+    {
+        VarVecWindow {
+            origin: self.mapping.as_ptr(),
+            data: &mut self.mapping[bounds],
+            _marker: PhantomData,
+        }
     }
+
+    // pub fn push_reverse<Data>(&mut self, meta: T::Meta, data: Data) -> u64
+    // where
+    //     Data: VariableWrite<T> + ConsistentSize<T>
+    // {
+    //     let size = Data::size(meta);
+    //     assert!(self.offset >= size, "cannot push_reverse data that won't fit");
+
+    //     self.offset -= size;
+    //     data.write_variable(meta, &mut self.mapping[self.offset..]);
+    //     *self.count += 1;
+    //     self.offset as _
+    // }
+
+    pub fn current_offset(&self) -> u64 {
+        self.offset as _
+    }
+
+    // pub fn set_offset(&mut self, offset: usize) {
+    //     assert!(offset < self.cap);
+    //     self.offset = offset;
+    // }
 
     #[cold]
     fn realloc(&mut self) {
@@ -152,7 +163,6 @@ impl<T: VariableLength, Realloc: ReallocOption> VarMmapVec<T, Realloc> {
                 .expect("failed to create to mapping")
         };
         self.mapping = mapping;
-        self.count = unsafe { &mut *(self.mapping.as_ptr() as *mut u64) };
     }
 
     // pub fn iter<Data>(&self) -> VarVecIter<T, Data> {
@@ -175,6 +185,84 @@ impl<T: VariableLength, Realloc: ReallocOption> VarMmapVec<T, Realloc> {
     {
         // T::from_bytes(&mut &self.mapping[offset..])
         Data::read_variable(meta, &self.mapping[offset as usize..]).0
+    }
+
+    /// This hints to the operating system that this mapping
+    /// is going to be accessed in a random fashion.
+    pub fn hint_random_access(&self) {
+        use madvise::{AccessPattern, AdviseMemory as _};
+
+        // Ignore errors.
+        let _ = self.mapping.advise_memory_access(AccessPattern::Random);
+    }
+}
+
+pub struct VarVecWindow<'a, T> {
+    origin: *const u8,
+    data: &'a mut [u8],
+    _marker: PhantomData<T>,
+}
+
+impl<'a, T: VariableLength> VarVecWindow<'a, T> {
+    #[track_caller]
+    pub fn take_window(&mut self, size: usize) -> VarVecWindow<'a, T> {
+        let data = mem::take(&mut self.data);
+        let (first, second) = data.split_at_mut(size);
+        self.data = second;
+
+        Self {
+            origin: self.origin,
+            data: first,
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn offset_in_mapping(&self) -> usize {
+        unsafe { self.data.as_ptr().offset_from(self.origin) as usize }
+    }
+
+    pub fn iter<Data>(&'a self, meta: T::Meta) -> impl Iterator<Item=Data> + 'a
+    where
+        Data: VariableRead<'a, T>,
+        T::Meta: Copy,
+    {
+        let mut data = &self.data[..];
+        iter::from_fn(move || {
+            if data.len() == 0 {
+                None
+            } else {
+                let (value, size) = Data::read_variable(meta, data);
+                data = &data[size..];
+                Some(value)
+            }
+        })
+    }
+}
+
+impl<'a, T: VariableLength> VarVecWindow<'a, T> {
+    pub fn push<Data>(&mut self, meta: T::Meta, data: Data)
+    where
+        Data: VariableWrite<T>
+    {
+        assert!(self.data.len() > 0, "the window has zero size");
+        let slice = mem::take(&mut self.data);
+        let size = data.write_variable(meta, slice);
+        self.data = &mut slice[size..];
+    }
+}
+
+impl<'a, T: VariableLength> VarVecWindow<'a, T> {
+    pub fn push_rev<Data>(&mut self, meta: T::Meta, data: Data)
+    where
+        Data: VariableWrite<T> + ConsistentSize<T>
+    {
+        assert!(self.data.len() > 0, "the window has zero size");
+        let size = Data::size(meta);
+        let slice = mem::take(&mut self.data);
+        let (rest, dest) = slice.split_at_mut(slice.len() - size);
+        self.data = rest;
+
+        data.write_variable(meta, dest);        
     }
 }
 

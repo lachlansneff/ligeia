@@ -117,10 +117,48 @@ macro_rules! define_item_containers {
                 }
             }
 
+            pub fn empty(size: usize) -> Self {
+                let data = vec![0; Self::size_in_bytes(size)].into_boxed_slice();
+                Self {
+                    size,
+                    data,
+                }
+            }
+
             pub fn as_slice(&self) -> $slice_name {
                 $slice_name {
                     size: self.size,
                     data: &*self.data,
+                }
+            }
+
+            /// Mix this vec in-place with a slice.
+            pub fn mix<F>(&mut self, slice: $slice_name, mut f: F)
+            where
+                F: FnMut($item, $item) -> $item
+            {
+                // let mut iter = self.as_slice().into_iter().zip(slice);
+                let mut iter = slice.into_iter();
+
+                for byte in self.data.iter_mut() {
+                    for (i, sqit) in (&mut iter).take(8 / $bits_per_item).enumerate() {
+                        let in_index = i * $bits_per_item;
+                        let bit = (*byte & ($mask << in_index)) >> in_index;
+                        let vqit = match bit {
+                            $(
+                                $bits => $item_variant,
+                            )*
+                            _ => unimplemented!()
+                        };
+
+                        let raw_qit = match f(vqit, sqit) {
+                            $(
+                                $item_variant => $bits,
+                            )*
+                        };
+        
+                        *byte |= raw_qit << (i * 2);
+                    }
                 }
             }
         }

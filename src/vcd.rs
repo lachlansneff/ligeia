@@ -2,21 +2,13 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::{
-    collections::{BTreeMap, HashMap},
-    convert::{TryFrom, TryInto},
-    fmt::{Debug, Display, Formatter},
-    fs::File,
-    io::{self, Read},
-    num::NonZeroU64,
-    time::Instant,
-};
+use std::{collections::{BTreeMap, HashMap}, convert::{TryFrom, TryInto}, fmt::{Debug, Display, Formatter}, fs::File, io::{self, Read}, iter, mem, num::NonZeroU64, time::Instant};
 
 use anyhow::anyhow;
 use io::BufReader;
 use vcd::{Command, Parser, ScopeItem};
 
-use crate::{db::{WaveformDatabase, WaveformLoader}, mmap_vec::{ReallocDisabled, VarMmapVec, VariableLength, VariableRead, VariableWrite}, types::{Qit, QitSlice}};
+use crate::{db::{WaveformDatabase, WaveformLoader}, mmap_vec::{ConsistentSize, ReallocDisabled, VarMmapVec, VarVecWindow, VariableLength, VariableRead, VariableWrite}, types::{Qit, QitSlice, QitVec}};
 
 struct NotValidVarIdError(());
 
@@ -419,40 +411,132 @@ impl VcdConverter {
 
     /// Single-threaded for now, but this is probably possible to multi-thread.
     fn into_db(self) -> io::Result<VcdDb> {
-        // Count up the sizes necessary for the averaged-value forest.
-        // There's probably a significantly more efficient way of doing this.
-        let total_size = self.var_metas.iter().map(|(var_id, var_meta)| {
-            let value_size = Qit::bits_to_bytes(var_meta.qits as _);
+        let layer_sizer = |var_meta: &VarMeta| {
+            let value_size = Node::size(var_meta.qits as usize);
             let mut count_on_layer = var_meta.number_of_value_changes as usize;
-            let mut layers = 0;
-            let mut acc = 0;
-            loop {
-                acc += count_on_layer * value_size;
-                layers += 1;
+            let mut finished_next = false;
+
+            iter::from_fn(move || {
+                let ret = if finished_next {
+                    None
+                } else {
+                    Some((count_on_layer, count_on_layer * value_size))
+                };
 
                 if count_on_layer < 1024 {
-                    break
+                    finished_next = true;
                 }
 
                 count_on_layer /= 4;
-            }
 
-            println!("variable {} with {} value changes fits in {} layers with {} items on the top layer",
-                var_id, var_meta.number_of_value_changes, layers, count_on_layer);
+                ret
+            })
+        };
 
-            acc
+        // Count up the sizes necessary for the averaged-value forest.
+        // There's probably a significantly more efficient way of doing this.
+        // let total_size = self.var_metas.iter().map(|(var_id, var_meta)| {
+        //     let value_size = Node::size(var_meta.qits as usize);
+        //     let mut count_on_layer = var_meta.number_of_value_changes as usize;
+        //     let mut layers = 0;
+        //     let mut acc = 0;
+        //     loop {
+        //         acc += count_on_layer * value_size;
+        //         layers += 1;
+
+        //         if count_on_layer < 1024 {
+        //             break
+        //         }
+
+        //         count_on_layer /= 4;
+        //     }
+
+        //     println!("variable {} with {} value changes fits in {} layers with {} items on the top layer",
+        //         var_id, var_meta.number_of_value_changes, layers, count_on_layer);
+
+        //     acc
+        // }).sum();
+
+        // println!("total size: {} bytes", total_size);
+
+        let total_size: usize = self.var_metas.values().map(|var_meta| -> usize {
+            layer_sizer(var_meta).map(|(_, size)| size).sum()
         }).sum();
 
-        println!("total size: {} bytes", total_size);
+        println!("test total size: {} bytes", total_size);
 
-        let mut forest: VarMmapVec<QitSliceProxy, ReallocDisabled> = VarMmapVec::create_with_capacity(total_size)?;
+        let start = Instant::now();
 
-        for (&var_id, var_meta) in &self.var_metas {
+        // This is a bad abstraction for this purpose. Needs a rework with the ability to get windows
+        // into the forest.
+        let mut forest: VarMmapVec<Node, ReallocDisabled> = VarMmapVec::create_with_capacity(total_size)?;
+        let mut offsets: HashMap<VarId, usize, ahash::RandomState> = HashMap::default();
+        let mut window = forest.window(..);
+
+        self.value_change.hint_random_access();
+
+        for (&var_id, var_meta) in self.var_metas.iter() {
+            // this iterator is in reverse, so we need to be careful to lay them down *not* in reverse.
             let value_change_iter = self.iter_reverse_value_change(var_id);
+            let mut layer_sizes = layer_sizer(var_meta);
 
+            let (_, bottom_layer_size) = layer_sizes.next().unwrap();
+            let mut layer_window = window.take_window(bottom_layer_size);
+            offsets.insert(var_id, layer_window.offset_in_mapping());
+
+            for (timestamp, value_change) in value_change_iter {
+                layer_window.push_rev(var_meta.qits as _, Node {
+                    timestamp,
+                    value_change,
+                });
+            }
+
+            let previous_layer_window = layer_window;
+
+            let mut value_change_mixed = QitVec::empty(var_meta.qits as _);
+
+            // The rest of the layers
+            // TODO: Fill in "mipmapping".
+            for (layer_len, layer_size) in layer_sizes {
+                let mut layer_window = window.take_window(layer_size);
+                let mut previous_layer_iter = previous_layer_window.iter(var_meta.qits as _);
+
+                for _ in 0..layer_len {
+                    let mut mixed_timestamp: u128 = 0;
+                    for (i, Node { timestamp, value_change }) in (&mut previous_layer_iter).take(4).enumerate() {
+                        if i == 0 {
+                            mixed_timestamp = timestamp as _;
+                            value_change_mixed.mix(value_change, |_, qit| qit);
+                        } else {
+                            mixed_timestamp += timestamp as u128;
+                            value_change_mixed.mix(value_change, |vqit, sqit| {
+                                // Sort of "or"
+                                match (vqit, sqit) {
+                                    (Qit::Zero, Qit::Zero) => Qit::Zero,
+                                    (Qit::One, Qit::Zero) => Qit::One,
+                                    (Qit::Zero, Qit::One) => Qit::One,
+                                    (Qit::One, Qit::One) => Qit::One,
+                                    (Qit::Z, _) => Qit::Z,
+                                    (_, Qit::Z) => Qit::Z,
+                                    (Qit::X, _) => Qit::X,
+                                    (_, Qit::X) => Qit::X,
+                                }
+                            })
+                        }
+                    }
+
+                    layer_window.push(var_meta.qits as _, Node {
+                        timestamp: (mixed_timestamp / 4) as _,
+                        value_change: value_change_mixed.as_slice(),
+                    });
+                }
+            }
         }
+
+        let elapsed = start.elapsed();
+        println!("writing out bottom layers took: {:.2}", elapsed.as_secs_f32());
         
-        let femtoseconds_per_timestep = if let Some((timesteps, unit)) = self.timescale {
+        let timescale = if let Some((timesteps, unit)) = self.timescale {
             timesteps as u128 * match unit {
                 vcd::TimescaleUnit::S => 1_000_000_000_000_000, // 1e15
                 vcd::TimescaleUnit::MS => 1_000_000_000_000, // 1e12
@@ -466,7 +550,7 @@ impl VcdConverter {
         };
 
         Ok(VcdDb {
-            femtoseconds_per_timestep,
+            timescale,
         })
     }
 }
@@ -515,41 +599,60 @@ impl ExactSizeIterator for ReverseValueChangeIter<'_> {
     }
 }
 
-enum QitSliceProxy {}
+struct Node<'a> {
+    timestamp: u64,
+    value_change: QitSlice<'a>,
+}
 
-impl<'a> VariableWrite<QitSliceProxy> for QitSlice<'a> {
+impl<'a, 'b> VariableWrite<Node<'a>> for Node<'b> {
     fn max_size(qits: usize) -> usize {
-        // (qits as usize + 4 - 1) / 4
-        Qit::bits_to_bytes(qits)
+        mem::size_of::<u64>() + Qit::bits_to_bytes(qits)
     }
 
     fn write_variable(self, qits: usize, b: &mut [u8]) -> usize {
-        let bytes = (qits as usize + 8 - 1) / 8;
+        let timestamp_offset = mem::size_of::<u64>();
+        b[..timestamp_offset].copy_from_slice(&self.timestamp.to_le_bytes());
 
-        self.write_qits(&mut b[..bytes]);
+        let bytes = Qit::bits_to_bytes(qits);
+        self.value_change.write_qits(&mut b[timestamp_offset..timestamp_offset + bytes]);
 
         bytes
     }
 }
-impl<'a> VariableRead<'a, QitSliceProxy> for QitSlice<'a> {
+impl<'a> VariableRead<'a> for Node<'a> {
     fn read_variable(qits: usize, b: &'a [u8]) -> (Self, usize) {
-        let bytes = Self::max_size(qits);
-        (QitSlice::new(qits, &b[..bytes]), bytes)
+        let timestamp_offset = mem::size_of::<u64>();
+        let timestamp = u64::from_le_bytes(b[..timestamp_offset].try_into().unwrap());
+
+        let bytes = Qit::bits_to_bytes(qits);
+        let node = Node {
+            timestamp,
+            value_change: QitSlice::new(qits, &b[timestamp_offset..timestamp_offset + bytes]),
+        };
+
+        (node, timestamp_offset + bytes)
     }
 }
 
-impl VariableLength for QitSliceProxy {
+impl VariableLength for Node<'_> {
     type Meta = usize;
     type DefaultReadData = ();
 }
 
+impl ConsistentSize for Node<'_> {
+    fn size(qits: usize) -> usize {
+        mem::size_of::<u64>() + Qit::bits_to_bytes(qits)
+    }
+}
+
 struct VcdDb {
-    femtoseconds_per_timestep: u128,
+    /// Femtoseconds per timestep
+    timescale: u128,
 }
 
 impl WaveformDatabase for VcdDb {
     fn timescale(&self) -> u128 {
-        self.femtoseconds_per_timestep
+        self.timescale
     }
 }
 
