@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use mapr::{MmapMut, MmapOptions};
-use std::{fs::File, io, iter, marker::PhantomData, mem, slice::SliceIndex};
+use std::{fs::File, io, iter, marker::PhantomData, mem, ops::Index, slice::SliceIndex};
 
 pub trait VariableWrite<Parent: VariableLength = Self> {
     /// Maximum possible length (in bytes). Should be small.
@@ -97,6 +97,10 @@ impl<T: VariableLength, Realloc: ReallocOption> VarMmapVec<T, Realloc> {
         })
     }
 
+    pub fn as_ptr(&self) -> *const u8 {
+        self.mapping.as_ptr()
+    }
+
     /// Returns offset of item in buffer.
     pub fn push<Data>(&mut self, meta: T::Meta, data: Data) -> u64
     where
@@ -186,15 +190,6 @@ impl<T: VariableLength, Realloc: ReallocOption> VarMmapVec<T, Realloc> {
         // T::from_bytes(&mut &self.mapping[offset..])
         Data::read_variable(meta, &self.mapping[offset as usize..]).0
     }
-
-    /// This hints to the operating system that this mapping
-    /// is going to be accessed in a random fashion.
-    pub fn hint_random_access(&self) {
-        use madvise::{AccessPattern, AdviseMemory as _};
-
-        // Ignore errors.
-        let _ = self.mapping.advise_memory_access(AccessPattern::Random);
-    }
 }
 
 pub struct VarVecWindow<'a, T> {
@@ -203,7 +198,8 @@ pub struct VarVecWindow<'a, T> {
     _marker: PhantomData<T>,
 }
 
-impl<'a, T: VariableLength> VarVecWindow<'a, T> {
+impl<'a, T: VariableLength + ConsistentSize> VarVecWindow<'a, T> {
+    // /// In units of 
     #[track_caller]
     pub fn take_window(&mut self, size: usize) -> VarVecWindow<'a, T> {
         let data = mem::take(&mut self.data);
@@ -264,6 +260,54 @@ impl<'a, T: VariableLength> VarVecWindow<'a, T> {
 
         data.write_variable(meta, dest);        
     }
+}
+
+impl VariableWrite for u64 {
+    #[inline]
+    fn max_size(_: ()) -> usize {
+        <u64 as varint_simd::num::VarIntTarget>::MAX_VARINT_BYTES as _
+    }
+
+    fn write_variable(self, _: (), b: &mut [u8]) -> usize {
+        // leb128::write::unsigned(&mut b, *self).unwrap()
+        varint_simd::encode_to_slice(self, b) as usize
+    }
+}
+impl VariableRead<'_> for u64 {
+    fn read_variable(_: (), b: &[u8]) -> (Self, usize) {
+        varint_simd::decode(b)
+            .map(|(int, size)| (int, size as _))
+            .unwrap()
+    }
+}
+
+impl VariableLength for u64 {
+    type Meta = ();
+    type DefaultReadData = Self;
+}
+
+impl VariableWrite for u32 {
+    #[inline]
+    fn max_size(_: ()) -> usize {
+        <u32 as varint_simd::num::VarIntTarget>::MAX_VARINT_BYTES as _
+    }
+
+    fn write_variable(self, _: (), b: &mut [u8]) -> usize {
+        // leb128::write::unsigned(&mut b, *self).unwrap()
+        varint_simd::encode_to_slice(self, b) as usize
+    }
+}
+impl VariableRead<'_> for u32 {
+    fn read_variable(_: (), b: &[u8]) -> (Self, usize) {
+        varint_simd::decode(b)
+            .map(|(int, size)| (int, size as _))
+            .unwrap()
+    }
+}
+
+impl VariableLength for u32 {
+    type Meta = ();
+    type DefaultReadData = Self;
 }
 
 // pub struct VarVecIter<'a, T: VariableLength, Data = <T as VariableLength>::DefaultReadData> {

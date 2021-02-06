@@ -26,7 +26,9 @@ thiserror = "1.0"
 ahash = "0.6.2"
 anyhow = "1.0"
 circular = "0.3"
-madvise = "0.1.0"
+# rfc2580 = "0.2.0"
+sys-info = "0.8.0"
+lazy_static = "1.4"
 
 [dependencies.vcd]
 git = "https://github.com/lachlansneff/rust-vcd.git"

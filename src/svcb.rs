@@ -4,15 +4,7 @@
 
 use crate::{db::{WaveformDatabase, WaveformLoader}, mmap_vec::{VarMmapVec, VariableLength, VariableWrite}, types::{BitSlice, BitVec, QitSlice, SizeInBytes}};
 use anyhow::anyhow;
-use std::{
-    collections::HashMap,
-    convert::TryInto,
-    fs::File,
-    io::{self, Read},
-    num::NonZeroUsize,
-    str,
-    time::Instant,
-};
+use std::{collections::HashMap, convert::TryInto, fs::File, future::Future, io::{self, Read}, num::NonZeroUsize, str, sync::Arc, time::Instant};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -916,6 +908,14 @@ pub struct SvcbDb {
 impl WaveformDatabase for SvcbDb {
     fn timescale(&self) -> u128 {
         self.timescale
+    }
+
+    fn tree(&self) -> Arc<[crate::db::Scope]> {
+        todo!()
+    }
+
+    fn load_waveform(&self, id: crate::db::VariableId) -> Box<dyn Future<Output = crate::db::Waveform>> {
+        todo!()
     }
 }
 

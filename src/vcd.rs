@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::{collections::{BTreeMap, HashMap}, convert::{TryFrom, TryInto}, fmt::{Debug, Display, Formatter}, fs::File, io::{self, Read}, iter, mem, num::NonZeroU64, time::Instant};
+use std::{collections::{BTreeMap, HashMap}, convert::{TryFrom, TryInto}, fmt::{Debug, Display, Formatter}, fs::File, future::Future, io::{self, Read}, iter, mem, num::NonZeroU64, sync::Arc, time::Instant};
 
 use anyhow::anyhow;
 use io::BufReader;
@@ -433,32 +433,6 @@ impl VcdConverter {
             })
         };
 
-        // Count up the sizes necessary for the averaged-value forest.
-        // There's probably a significantly more efficient way of doing this.
-        // let total_size = self.var_metas.iter().map(|(var_id, var_meta)| {
-        //     let value_size = Node::size(var_meta.qits as usize);
-        //     let mut count_on_layer = var_meta.number_of_value_changes as usize;
-        //     let mut layers = 0;
-        //     let mut acc = 0;
-        //     loop {
-        //         acc += count_on_layer * value_size;
-        //         layers += 1;
-
-        //         if count_on_layer < 1024 {
-        //             break
-        //         }
-
-        //         count_on_layer /= 4;
-        //     }
-
-        //     println!("variable {} with {} value changes fits in {} layers with {} items on the top layer",
-        //         var_id, var_meta.number_of_value_changes, layers, count_on_layer);
-
-        //     acc
-        // }).sum();
-
-        // println!("total size: {} bytes", total_size);
-
         let total_size: usize = self.var_metas.values().map(|var_meta| -> usize {
             layer_sizer(var_meta).map(|(_, size)| size).sum()
         }).sum();
@@ -473,9 +447,10 @@ impl VcdConverter {
         let mut offsets: HashMap<VarId, usize, ahash::RandomState> = HashMap::default();
         let mut window = forest.window(..);
 
-        self.value_change.hint_random_access();
+        let mut times = vec![];
 
         for (&var_id, var_meta) in self.var_metas.iter() {
+            let start = Instant::now();
             // this iterator is in reverse, so we need to be careful to lay them down *not* in reverse.
             let value_change_iter = self.iter_reverse_value_change(var_id);
             let mut layer_sizes = layer_sizer(var_meta);
@@ -531,10 +506,16 @@ impl VcdConverter {
                     });
                 }
             }
+
+            times.push((var_id, var_meta.number_of_value_changes, start.elapsed()));
         }
 
+        let (var_id, number_of_value_changes, max_time) = times.iter().max_by_key(|(_, _, time)| time).unwrap();
+
+        println!("variable {}, with {} value changes, took {:.2} ms", var_id, number_of_value_changes, max_time.as_secs_f32() * 1000.);
+
         let elapsed = start.elapsed();
-        println!("writing out bottom layers took: {:.2}", elapsed.as_secs_f32());
+        println!("writing out bottom layers took: {:.2} seconds", elapsed.as_secs_f32());
         
         let timescale = if let Some((timesteps, unit)) = self.timescale {
             timesteps as u128 * match unit {
@@ -653,6 +634,14 @@ struct VcdDb {
 impl WaveformDatabase for VcdDb {
     fn timescale(&self) -> u128 {
         self.timescale
+    }
+
+    fn tree(&self) -> Arc<[crate::db::Scope]> {
+        todo!()
+    }
+
+    fn load_waveform(&self, id: crate::db::VariableId) -> Box<dyn Future<Output = crate::db::Waveform>> {
+        todo!()
     }
 }
 

@@ -44,6 +44,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf1de2fe8c75bc145a2f577add951f8134889b4795d47466a54a5c846d691693"
 
 [[package]]
+name = "cc"
+version = "1.0.66"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c0496836a84f8d0495758516b8621a622beb77c0fed418570e50764093ced48"
+
+[[package]]
 name = "cfg-if"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -130,22 +136,14 @@ dependencies = [
  "anyhow",
  "circular",
  "clap",
- "madvise",
+ "lazy_static",
  "mapr",
  "structopt",
+ "sys-info",
  "tempfile",
  "thiserror",
  "varint-simd",
  "vcd",
-]
-
-[[package]]
-name = "madvise"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e1e75c3c34c2b34cec9f127418cb35240c7ebee5de36a51437e6b382c161b86"
-dependencies = [
- "libc",
 ]
 
 [[package]]
@@ -301,6 +299,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-xid",
+]
+
+[[package]]
+name = "sys-info"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f3e7ba888a12ddcf0084e36ae4609b055845f38022d1946b67356fbc27d5795"
+dependencies = [
+ "cc",
+ "libc",
 ]
 
 [[package]]

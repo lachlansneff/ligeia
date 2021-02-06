@@ -2,61 +2,51 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::{io::Read, path::Path};
+use std::{future::Future, io::Read, path::Path, sync::Arc};
+use crate::types::{BitSlice, BitVec, QitSlice};
 
-use crate::mmap_vec::{VariableRead, VariableLength, VariableWrite};
-
-impl VariableWrite for u64 {
-    #[inline]
-    fn max_size(_: ()) -> usize {
-        <u64 as varint_simd::num::VarIntTarget>::MAX_VARINT_BYTES as _
-    }
-
-    fn write_variable(self, _: (), b: &mut [u8]) -> usize {
-        // leb128::write::unsigned(&mut b, *self).unwrap()
-        varint_simd::encode_to_slice(self, b) as usize
-    }
-}
-impl VariableRead<'_> for u64 {
-    fn read_variable(_: (), b: &[u8]) -> (Self, usize) {
-        varint_simd::decode(b)
-            .map(|(int, size)| (int, size as _))
-            .unwrap()
-    }
+#[derive(Debug)]
+pub struct Scope {
+    pub name: String,
+    pub variables: Vec<Variable>,
+    pub scopes: Vec<Scope>,
 }
 
-impl VariableLength for u64 {
-    type Meta = ();
-    type DefaultReadData = Self;
-}
-
-impl VariableWrite for u32 {
-    #[inline]
-    fn max_size(_: ()) -> usize {
-        <u32 as varint_simd::num::VarIntTarget>::MAX_VARINT_BYTES as _
-    }
-
-    fn write_variable(self, _: (), b: &mut [u8]) -> usize {
-        // leb128::write::unsigned(&mut b, *self).unwrap()
-        varint_simd::encode_to_slice(self, b) as usize
-    }
-}
-impl VariableRead<'_> for u32 {
-    fn read_variable(_: (), b: &[u8]) -> (Self, usize) {
-        varint_simd::decode(b)
-            .map(|(int, size)| (int, size as _))
-            .unwrap()
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum VariableInfo {
+    Integer {
+        bits: usize,
+        is_signed: bool,
+    },
+    Enum {
+        bits: usize,
+        fields: Vec<(String, BitVec)>,
+    },
+    String {
+        len: usize,
     }
 }
 
-impl VariableLength for u32 {
-    type Meta = ();
-    type DefaultReadData = Self;
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct VariableId(usize);
+
+#[derive(Debug)]
+pub struct Variable {
+    pub id: VariableId,
+    pub name: String,
+    pub info: VariableInfo,
 }
 
+/// A waveform database does not necessarily have any variables
+/// immediately accessible, but they can be queried for to load
+/// them individually.
 pub trait WaveformDatabase: Send {
     /// Femtoseconds per timestep
     fn timescale(&self) -> u128;
+    /// Retrieve the variable-scope tree of the database.
+    fn tree(&self) -> Arc<[Scope]>;
+    /// Load one variable asyncronously.
+    fn load_waveform(&self, id: VariableId) -> Box<dyn Future<Output = Waveform>>;
 }
 
 pub trait WaveformLoader: Sync {
@@ -69,121 +59,27 @@ pub trait WaveformLoader: Sync {
     fn load_stream(&self, reader: &mut dyn Read) -> anyhow::Result<Box<dyn WaveformDatabase>>;
 }
 
-// const NODE_CHILDREN: usize = 8;
+pub enum Waveform {
+    Binary(BitWaveform),
+    Quaternary(QitWaveform),
+    Utf8()
+}
 
-// /// While this is variable size (through the `VariableLength` trait),
-// /// each node in a given layer for a given variable is the same size.
-// #[derive(Debug)]
-// struct Node<T: WriteQits> {
-//     /// Offsets (from offset of beginning of the tree this node is in) of this node's children.
-//     children: [u32; NODE_CHILDREN],
-//     averaged_qits: T,
-// }
+pub struct BitWaveform {
+    pub layers: Vec<Box<dyn BitLayer + Send>>,
+}
 
-// enum NodeProxy {}
+pub trait BitLayer {
+    fn iter(&self) -> Box<dyn Iterator<Item = (u64, BitSlice)>>;
+    fn len(&self) -> usize;
+}
 
-// impl<T: WriteQits> WriteData<NodeProxy> for Node<T> {
-//     fn max_size(qits: usize) -> usize {
-//         mem::size_of::<[u32; NODE_CHILDREN]>() + Qit::bits_to_bytes(qits)
-//     }
+pub struct QitWaveform {
+    pub layers: Vec<Box<dyn QitLayer + Send>>,
+}
 
-//     fn write_bytes(self, qits: usize, b: &mut [u8]) -> usize {
-//         let total_size = Self::max_size(qits);
-//         let children_size = mem::size_of::<[u32; NODE_CHILDREN]>();
+pub trait QitLayer {
+    fn iter(&self) -> Box<dyn Iterator<Item = (u64, QitSlice)>>;
+    fn len(&self) -> usize;
+}
 
-//         b[..children_size]
-//             .copy_from_slice(unsafe {
-//                 slice::from_raw_parts(self.children.as_ptr() as *const u8, self.children.len() * mem::size_of::<u32>())
-//             });
-
-//         self.averaged_qits.write_qits(&mut b[children_size..total_size]);
-
-//         total_size
-//     }
-// }
-// impl<'a> ReadData<'a, NodeProxy> for Node<QitSlice<'a>> {
-//     fn read_data(qits: usize, b: &'a [u8]) -> (Self, usize) {
-//         let total_size = Self::max_size(qits);
-//         let children_size = mem::size_of::<[u32; NODE_CHILDREN]>();
-
-//         let children = unsafe { *(b[children_size..].as_ptr() as *const [u32; NODE_CHILDREN]) };
-
-//         let node = Node {
-//             children,
-//             averaged_qits: QitSlice::new(qits, &b[children_size..total_size])
-//         };
-
-//         (node, total_size)
-//     }
-// }
-
-// // struct JustBits<T: WriteBits>(T);
-// impl<T: WriteQits> WriteData<NodeProxy> for T {
-//     fn max_size(qits: usize) -> usize {
-//         // (qits as usize + 4 - 1) / 4
-//         Qit::bits_to_bytes(qits)
-//     }
-
-//     fn write_bytes(self, qits: usize, b: &mut [u8]) -> usize {
-//         let bytes = (qits as usize + 8 - 1) / 8;
-
-//         self.write_qits(&mut b[..bytes]);
-
-//         bytes
-//     }
-// }
-// impl<'a> ReadData<'a, NodeProxy> for QitSlice<'a> {
-//     fn read_data(qits: usize, b: &'a [u8]) -> (Self, usize) {
-//         let bytes = Self::max_size(qits);
-//         (QitSlice::new(qits, &b[..bytes]), bytes)
-//     }
-// }
-
-// impl VariableLength for NodeProxy {
-//     type Meta = usize;
-//     type DefaultReadData = ();
-// }
-
-// /// Converts the number of value changes to the number of layers in the tree.
-// fn value_changes_to_layers(count: usize) -> usize {
-//     todo!("value change count: {}", count)
-// }
-
-// /// This contains a list of variably-sized structures that are structurally similar
-// /// to a tree, each one corresponding to variable.
-// /// Each layer is made up of nodes and each tree looks like the following:
-// /// | up-to 128 top-level nodes |
-// ///       / / /   |   \ \ \
-// ///              ...
-// /// `value_changes_to_layers() - 2` layers
-// ///              ...
-// /// | a final layer of nodes corresponding to the actual values (only bit iterators are written in this layer) |
-// ///
-// ///
-// /// This structure utilizes multiple threads and prioritises variables that are requested.
-// struct FrustumTree {
-//     /// Contains a map of variable ids to offsets in the tree structure.
-//     offsets: HashMap<VarId, u64>,
-//     trees: VarMmapVec<NodeProxy>,
-
-//     queue: Arc<Mutex<Vec<VarId>>>,
-//     // thread_pool: Option<rayon::ThreadPool>,
-// }
-
-// impl FrustumTree {
-//     pub fn generate(streaming_db: StreamingDb) -> Self {
-//         // let thread_pool = rayon::ThreadPoolBuilder::new().build().expect("failed to build threadpool");
-//         // let num_threads = thread_pool.current_num_threads();
-
-//         todo!()
-//     }
-
-//     pub fn is_finished(&self) -> bool {
-//         self.queue.lock().unwrap().is_empty()
-//     }
-// }
-
-// pub struct QueryDb {
-
-//     // frustum_tree:
-// }

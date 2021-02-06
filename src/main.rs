@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+#![feature(allocator_api, nonnull_slice_from_raw_parts, alloc_layout_extra, slice_ptr_len, slice_ptr_get, range_bounds_assert_len )]
+
 use anyhow::Context;
 use clap::arg_enum;
 use db::WaveformLoader;
@@ -19,6 +21,9 @@ mod progress;
 mod svcb;
 mod types;
 mod vcd;
+mod forest;
+mod unsized_types;
+mod mmap_alloc;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "ligeia", about = "A waveform display program.")]
