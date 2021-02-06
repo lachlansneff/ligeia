@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::{alloc::{Allocator, Layout}, fmt::{Display, Debug}, marker::PhantomData, mem, ops::{Index, IndexMut, Range, RangeBounds}, ptr::{self, NonNull}, slice};
+use std::{alloc::{Allocator, Layout}, fmt::{Display, Debug}, marker::PhantomData, mem, ops::{Index, IndexMut, RangeBounds}, ptr::{self, NonNull}, slice};
 // use rfc2580::{MetaData, Pointee, from_raw_parts, into_raw_parts};
 
 pub trait BitType: Copy + Clone + PartialEq + Eq + Display {
@@ -98,6 +98,7 @@ pub unsafe trait KnownUnsized {
     fn from_raw_parts_mut(ptr: *mut u8, meta: usize) -> *mut Self;
 
     unsafe fn write_from_parts(ptr: *mut Self, bit_slice: &BitSlice<Self::Bit>, parts: Self::Parts);
+    unsafe fn write_from_iter(ptr: *mut Self, iter: impl Iterator<Item = Self::Bit>, parts: Self::Parts);
 }
 
 // struct BitSliceMetaData<T: BitType>(usize, PhantomData<fn(T) -> T>);
@@ -221,6 +222,16 @@ unsafe impl<T: BitType> KnownUnsized for BitSlice<T> {
     unsafe fn write_from_parts(ptr: *mut Self, slice: &BitSlice<T>, _: ()) {
         (&mut *ptr).bytes_mut().copy_from_slice(slice.bytes());
     }
+
+    unsafe fn write_from_iter(ptr: *mut Self, mut iter: impl Iterator<Item = Self::Bit>, _: ()) {
+        for byte in (&mut *ptr).bytes_mut() {
+            for (i, other_bit) in (&mut iter).take(T::PER_BYTE as usize).enumerate() {
+                let in_index = i * T::BIT_SIZE as usize;
+
+                *byte = (*byte & !(T::MASK << in_index)) | (T::to_bits(other_bit) << in_index);
+            }
+        }
+    }
 }
 
 impl<'a, T: BitType> IntoIterator for &'a BitSlice<T> {
@@ -314,6 +325,18 @@ unsafe impl<T: BitType> KnownUnsized for ValueChangeNode<T> {
         dest.timestamp = timestamp;
         dest.bits.bytes_mut().copy_from_slice(bit_slice.bytes());
     }
+
+    unsafe fn write_from_iter(ptr: *mut Self, mut iter: impl Iterator<Item = Self::Bit>, timestamp: u64) {
+        let mut dest = &mut *ptr;
+        dest.timestamp = timestamp;
+        for byte in dest.bits.bytes_mut() {
+            for (i, other_bit) in (&mut iter).take(T::PER_BYTE as usize).enumerate() {
+                let in_index = i * T::BIT_SIZE as usize;
+
+                *byte = (*byte & !(T::MASK << in_index)) | (T::to_bits(other_bit) << in_index);
+            }
+        }
+    }
 }
 
 pub struct KnownUnsizedVec<T: ?Sized + KnownUnsized, A: Allocator> {
@@ -339,7 +362,7 @@ impl<T: ?Sized + KnownUnsized, A: Allocator> KnownUnsizedVec<T, A> {
             element_size,
             meta,
             len: 0,
-            cap: ptr.len(),
+            cap,
             ptr: ptr.as_non_null_ptr(),
             alloc,
             _marker: PhantomData,
@@ -348,13 +371,46 @@ impl<T: ?Sized + KnownUnsized, A: Allocator> KnownUnsizedVec<T, A> {
 
     pub fn push(&mut self, slice: &BitSlice<T::Bit>, parts: T::Parts) {
         if self.len == self.cap {
-            todo!("implement reallocation")
+            self.realloc();
         }
 
         let ptr = unsafe { self.ptr.as_ptr().add(self.len * self.element_size) };
         let dest = T::from_raw_parts_mut(ptr, self.meta);
         unsafe { T::write_from_parts(dest, slice, parts) }
         self.len += 1;
+    }
+
+    pub fn push_from_iter(&mut self, iter: impl Iterator<Item = T::Bit>, parts: T::Parts) {
+        if self.len == self.cap {
+            self.realloc();
+        }
+
+        let ptr = unsafe { self.ptr.as_ptr().add(self.len * self.element_size) };
+        let dest = T::from_raw_parts_mut(ptr, self.meta);
+        unsafe { T::write_from_iter(dest, iter, parts) }
+        self.len += 1;
+    }
+
+    #[cold]
+    fn realloc(&mut self) {
+        let old_cap = self.cap;
+        if self.cap == 0 {
+            self.cap = 1;
+        } else {
+            self.cap *= 2;
+        }
+
+        let layout = Layout::from_size_align(T::size_from_meta(self.meta), T::align()).unwrap();
+
+        let (old_layout, _) = layout.repeat(old_cap).unwrap();
+
+        let (new_layout, _) = layout.repeat(self.cap).unwrap();
+
+        let ptr = unsafe {
+            self.alloc.grow(self.ptr, old_layout, new_layout).expect("failed to grow KnownUnsizedVec")
+        };
+
+        self.ptr = ptr.as_non_null_ptr();
     }
 
     pub fn iter<B: RangeBounds<usize>>(&self, bounds: B) -> KnownUnsizedVecIter<T> {

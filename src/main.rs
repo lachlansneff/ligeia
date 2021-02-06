@@ -21,6 +21,7 @@ mod progress;
 mod svcb;
 mod types;
 mod vcd;
+mod vcd2;
 mod forest;
 mod unsized_types;
 mod mmap_alloc;
@@ -52,7 +53,7 @@ enum Source {
 }
 
 const LOADERS: &[(FileFormat, &'static dyn WaveformLoader)] = &[
-    (FileFormat::Vcd, &crate::vcd::VcdLoader::new()),
+    (FileFormat::Vcd, &crate::vcd2::VcdLoader::new()),
     (FileFormat::Svcb, &crate::svcb::SvcbLoader::new()),
 ];
 

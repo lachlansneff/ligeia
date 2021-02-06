@@ -27,8 +27,8 @@ pub enum VariableInfo {
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub struct VariableId(usize);
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct VariableId(pub u64);
 
 #[derive(Debug)]
 pub struct Variable {
