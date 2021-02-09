@@ -5,7 +5,7 @@ use crate::{
     },
     info_bars::{BarFormatter, InfoBar, InfoBars},
     mmap_alloc::MmappableAllocator,
-    unsized_types::{BitSlice, BitType, KnownUnsizedVec, Qit, ValueChangeNode},
+    unsized_types::{KnownUnsizedVec, Qit, ValueChangeNode},
 };
 use lazy_format::lazy_format;
 use std::{
@@ -293,7 +293,6 @@ impl WaveformLoader for VcdLoader {
             Err(_) => {
                 println!("mmap failed, attempting to load file as a stream");
 
-                // VcdConverter::load_vcd(BufReader::with_capacity(1_000_000, f))?
                 return self.load_stream(info_bars, &mut f);
             }
         };

@@ -42,6 +42,7 @@ mod lazy;
 mod mmap_alloc;
 mod unsized_types;
 mod vcd2;
+mod gui;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "ligeia", about = "A waveform display program.")]
@@ -96,14 +97,14 @@ fn run(
 
     // Now that the loader is set up, start spinning up the ui.
 
-    let _vcdb = rx
+    let waveform = rx
         .recv()
         .expect("failed to receive over channel")
         .context("failed to load waveform")?;
 
     loader_thread.join().unwrap();
 
-    Ok(())
+    gui::begin()
 }
 
 fn memory_usage_bar_render<'a>(
@@ -157,22 +158,6 @@ fn main() -> anyhow::Result<()> {
             thread::sleep(std::time::Duration::from_millis(100));
         });
     }
-
-    // effective_limits::memory_limit().ok().map(|total_memory_limit| {
-    // let pb = indicatif::ProgressBar::new(total_memory_limit);
-    // pb.set_style(
-    //     indicatif::ProgressStyle::default_bar()
-    //         .template("memory usage: [{bar:.bold.dim}] {bytes}/{total_bytes} ({percent}%)")
-    // );
-
-    // thread::spawn(move || {
-    //     loop {
-    //         let usage = mmap_alloc::MmappableAllocator::rough_total_usage();
-    //         pb.set_position(usage as u64);
-    //         thread::sleep(std::time::Duration::from_millis(100));
-    //     }
-    // });
-    // });
 
     let (loader, path_or_reader) = if opt.file == OsStr::new("-") {
         // Just read from stdin.
