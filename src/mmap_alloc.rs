@@ -2,8 +2,17 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::{alloc::{AllocError, Allocator, Global, Layout}, collections::HashMap, fs::File, ptr::{self, NonNull}, sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}}};
 use mapr::{MmapMut, MmapOptions};
+use std::{
+    alloc::{AllocError, Allocator, Global, Layout},
+    collections::HashMap,
+    fs::File,
+    ptr::{self, NonNull},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
+};
 
 lazy_static::lazy_static! {
     static ref INITIAL_AVAILABLE_MEMORY: Option<u64> = {
@@ -36,9 +45,8 @@ impl MmappableAllocator {
     }
 
     fn allocate_mmap(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        let f = tempfile::tempfile()
-            .map_err(|_| AllocError)?; // TODO: log if there's an error
-        
+        let f = tempfile::tempfile().map_err(|_| AllocError)?; // TODO: log if there's an error
+
         f.set_len(layout.size() as u64) // Will always be aligned to page size, so should be good enough.
             .map_err(|_| AllocError)?; // TODO: log if there's an error
 
@@ -50,18 +58,19 @@ impl MmappableAllocator {
         };
         let ptr = NonNull::from(&mapping[..]);
 
-        self.mappings.lock().unwrap().insert(ptr.as_non_null_ptr(), (f, mapping));
+        self.mappings
+            .lock()
+            .unwrap()
+            .insert(ptr.as_non_null_ptr(), (f, mapping));
 
         Ok(ptr)
     }
 }
 
 fn should_mmap(size: usize) -> bool {
-    INITIAL_AVAILABLE_MEMORY
-        .map(|remaining|
-            size >= 10_000_000
-            || remaining <= ALLOCATED_SIZE.load(Ordering::Relaxed) as u64 * 2
-    ) == Some(true)
+    INITIAL_AVAILABLE_MEMORY.map(|remaining| {
+        size >= 10_000_000 || remaining <= ALLOCATED_SIZE.load(Ordering::Relaxed) as u64 * 2
+    }) == Some(true)
 }
 
 unsafe impl Allocator for MmappableAllocator {
@@ -71,7 +80,7 @@ unsafe impl Allocator for MmappableAllocator {
         let ptr = if should_mmap(layout.size()) {
             // Looks like we're getting close to the total size available
             // or we want to allocate a pretty large region.
-            
+
             self.allocate_mmap(layout)?
         } else {
             // Either we can't get information about this machine's memory, or we're nowhere close to the limit.
@@ -86,22 +95,26 @@ unsafe impl Allocator for MmappableAllocator {
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
         if let Some((_, _mapping)) = self.mappings.lock().unwrap().remove(&ptr) {
-            return
+            return;
         }
 
         Global.deallocate(ptr, layout);
         ALLOCATED_SIZE.fetch_sub(layout.size(), Ordering::Relaxed);
     }
 
-    unsafe fn grow(&self, ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+    unsafe fn grow(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, AllocError> {
         {
             let mut mappings = self.mappings.lock().unwrap();
 
             if let Some((f, _mapping)) = mappings.remove(&ptr) {
-                f
-                    .set_len(new_layout.size() as u64)
+                f.set_len(new_layout.size() as u64)
                     .map_err(|_| AllocError)?; // TODO: log if there's an error
-    
+
                 let mapping = MmapOptions::new()
                     .len(new_layout.size())
                     .map_mut(&f)
@@ -109,7 +122,7 @@ unsafe impl Allocator for MmappableAllocator {
                 let ptr = NonNull::from(&mapping[..]);
 
                 mappings.insert(ptr.as_non_null_ptr(), (f, mapping));
-    
+
                 return Ok(ptr);
             }
         }
@@ -119,7 +132,7 @@ unsafe impl Allocator for MmappableAllocator {
             // Switch this to an mmapped region.
             let new_layout = new_layout.pad_to_align();
             let new_region = self.allocate_mmap(new_layout)?;
-            
+
             ptr::copy_nonoverlapping(ptr.as_ptr(), new_region.as_mut_ptr(), old_layout.size());
             Global.deallocate(ptr, old_layout);
 

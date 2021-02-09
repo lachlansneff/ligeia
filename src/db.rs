@@ -2,8 +2,20 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::{collections::HashMap, future::Future, io::Read, iter, path::Path, sync::{Arc, Mutex}};
-use crate::{info_bars::InfoBars, lazy::LazyModify, mmap_alloc::MmappableAllocator, unsized_types::{Bit, BitSlice, BitType, KnownUnsizedVec, Qit, ValueChangeNode}};
+use crate::{
+    info_bars::InfoBars,
+    lazy::LazyModify,
+    mmap_alloc::MmappableAllocator,
+    unsized_types::{Bit, BitSlice, BitType, KnownUnsizedVec, Qit, ValueChangeNode},
+};
+use std::{
+    collections::HashMap,
+    future::Future,
+    io::Read,
+    iter,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 #[derive(Debug)]
 pub struct Scope {
@@ -24,7 +36,7 @@ pub enum VariableInfo {
     },
     String {
         len: usize,
-    }
+    },
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
@@ -65,11 +77,9 @@ pub enum TreeOrLayer<T: BitType> {
 }
 
 impl<T: BitType> TreeOrLayer<T> {
-    fn into_tree(self) -> Self{
+    fn into_tree(self) -> Self {
         match self {
-            TreeOrLayer::Layer(layer) => {
-                TreeOrLayer::Tree(Tree::new(layer))
-            },
+            TreeOrLayer::Layer(layer) => TreeOrLayer::Tree(Tree::new(layer)),
             x @ TreeOrLayer::Tree(_) => x,
         }
     }
@@ -93,9 +103,8 @@ impl<T: BitType> Tree<T> {
     pub fn new(first_layer: KnownUnsizedVec<ValueChangeNode<T>, Alloc>) -> Self {
         let mut node_tree = first_layer;
         let real_data_len = node_tree.len();
-        let additional_len_required = layer_count_generator(real_data_len)
-            .sum();
-            node_tree.reserve(additional_len_required);
+        let additional_len_required = layer_count_generator(real_data_len).sum();
+        node_tree.reserve(additional_len_required);
 
         let mut averaged_bits = BitSlice::<T>::new_boxed(node_tree.meta());
 
@@ -122,9 +131,7 @@ impl<T: BitType> Tree<T> {
             }
         }
 
-        Self {
-            node_tree
-        }
+        Self { node_tree }
     }
 }
 
@@ -152,7 +159,9 @@ pub struct Forest {
 
 impl Forest {
     pub fn new(allocator: Alloc, layers: impl Iterator<Item = (VariableId, NodeTree)>) -> Self {
-        let trees = layers.map(|(id, tree)| (id, Arc::new(LazyModify::new(tree)))).collect();
+        let trees = layers
+            .map(|(id, tree)| (id, Arc::new(LazyModify::new(tree))))
+            .collect();
 
         Self {
             allocator,
@@ -163,11 +172,9 @@ impl Forest {
     /// If the tree is not "mipmapped", this function will mipmap it before returning.
     pub fn retrieve(&self, id: VariableId) -> Arc<LazyModify<NodeTree>> {
         let node_tree = self.trees.lock().unwrap()[&id].clone();
-        node_tree.modify(|node_tree| {
-            match node_tree {
-                NodeTree::Bit(tree) => NodeTree::Bit(tree.into_tree()),
-                NodeTree::Qit(tree) => NodeTree::Qit(tree.into_tree()),
-            }
+        node_tree.modify(|node_tree| match node_tree {
+            NodeTree::Bit(tree) => NodeTree::Bit(tree.into_tree()),
+            NodeTree::Qit(tree) => NodeTree::Qit(tree.into_tree()),
         });
         node_tree
     }

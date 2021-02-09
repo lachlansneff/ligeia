@@ -2,7 +2,16 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::{alloc::{Allocator, Layout}, fmt::{Display, Debug}, hint::unreachable_unchecked, marker::PhantomData, mem, ops::{Index, IndexMut, RangeBounds}, ptr::{self, NonNull}, slice};
+use std::{
+    alloc::{Allocator, Layout},
+    fmt::{Debug, Display},
+    hint::unreachable_unchecked,
+    marker::PhantomData,
+    mem,
+    ops::{Index, IndexMut, RangeBounds},
+    ptr::{self, NonNull},
+    slice,
+};
 // use rfc2580::{MetaData, Pointee, from_raw_parts, into_raw_parts};
 
 pub trait BitType: Copy + Clone + PartialEq + Eq + Display {
@@ -85,7 +94,7 @@ impl BitType for Qit {
             1 => Qit::One,
             2 => Qit::X,
             3 => Qit::Z,
-            _ => unsafe{ unreachable_unchecked() }
+            _ => unsafe { unreachable_unchecked() },
         }
     }
 
@@ -112,7 +121,11 @@ pub unsafe trait KnownUnsized {
     fn from_raw_parts_mut(ptr: *mut u8, meta: usize) -> *mut Self;
 
     unsafe fn write_from_parts(ptr: *mut Self, bit_slice: &BitSlice<Self::Bit>, parts: Self::Parts);
-    unsafe fn write_from_iter(ptr: *mut Self, iter: impl Iterator<Item = Self::Bit>, parts: Self::Parts);
+    unsafe fn write_from_iter(
+        ptr: *mut Self,
+        iter: impl Iterator<Item = Self::Bit>,
+        parts: Self::Parts,
+    );
 }
 
 // struct BitSliceMetaData<T: BitType>(usize, PhantomData<fn(T) -> T>);
@@ -128,7 +141,7 @@ pub unsafe trait KnownUnsized {
 
 //     fn disassemble(ptr: *const BitSlice<T>) -> (Self, *const u8) {
 //         assert!(mem::size_of::<*const BitSlice<T>>() == mem::size_of::<(usize, usize)>());
-        
+
 //         let (data, len): (usize, usize) = unsafe { mem::transmute(ptr) };
 
 //         (BitSliceMetaData(len, PhantomData), data as *const u8)
@@ -157,7 +170,9 @@ impl<T: BitType> BitSlice<T> {
 
         // SAFETY: Miri really does not like this, but as long as `data` is not
         // used without `bytes()` or `bytes_mut()`, this should be okay.
-        unsafe { &mut *(ptr::slice_from_raw_parts_mut(bytes.as_mut_ptr(), len) as *mut BitSlice<T>) }
+        unsafe {
+            &mut *(ptr::slice_from_raw_parts_mut(bytes.as_mut_ptr(), len) as *mut BitSlice<T>)
+        }
     }
 
     pub fn new_boxed(len: usize) -> Box<Self> {
@@ -173,13 +188,13 @@ impl<T: BitType> BitSlice<T> {
 
     pub fn bytes(&self) -> &[u8] {
         let bytes = (self.len() + T::PER_BYTE as usize - 1) / T::PER_BYTE as usize;
-        
+
         unsafe { slice::from_raw_parts(self.data.as_ptr(), bytes) }
     }
 
     pub fn bytes_mut(&mut self) -> &mut [u8] {
         let bytes = (self.len() + T::PER_BYTE as usize - 1) / T::PER_BYTE as usize;
-        
+
         unsafe { slice::from_raw_parts_mut(self.data.as_mut_ptr(), bytes) }
     }
 
@@ -212,7 +227,8 @@ impl<T: BitType> BitSlice<T> {
                 let bit = (*byte & (T::MASK << in_index)) >> in_index;
                 let this_bit = T::from_bits(bit);
 
-                *byte = (*byte & !(T::MASK << in_index)) | (T::to_bits(f(this_bit, other_bit)) << in_index);
+                *byte = (*byte & !(T::MASK << in_index))
+                    | (T::to_bits(f(this_bit, other_bit)) << in_index);
             }
         }
     }
@@ -270,7 +286,7 @@ impl<'a, T: BitType> IntoIterator for &'a BitSlice<T> {
             size: self.len(),
             index: 0,
             bytes: self.bytes(),
-            _marker: PhantomData,   
+            _marker: PhantomData,
         }
     }
 }
@@ -331,7 +347,7 @@ unsafe impl<T: BitType> KnownUnsized for ValueChangeNode<T> {
     type Bit = T;
 
     fn size_from_meta(meta: usize) -> usize {
-        mem::size_of::<u64>() + <BitSlice::<T> as KnownUnsized>::size_from_meta(meta)
+        mem::size_of::<u64>() + <BitSlice<T> as KnownUnsized>::size_from_meta(meta)
     }
 
     fn align() -> usize {
@@ -352,7 +368,11 @@ unsafe impl<T: BitType> KnownUnsized for ValueChangeNode<T> {
         dest.bits.bytes_mut().copy_from_slice(bit_slice.bytes());
     }
 
-    unsafe fn write_from_iter(ptr: *mut Self, mut iter: impl Iterator<Item = Self::Bit>, timestamp: u64) {
+    unsafe fn write_from_iter(
+        ptr: *mut Self,
+        mut iter: impl Iterator<Item = Self::Bit>,
+        timestamp: u64,
+    ) {
         let mut dest = &mut *ptr;
         dest.timestamp = timestamp;
         for byte in dest.bits.bytes_mut() {
@@ -432,11 +452,16 @@ impl<T: ?Sized + KnownUnsized, A: Allocator> KnownUnsizedVec<T, A> {
         self.cap += additional;
 
         let layout = Layout::from_size_align(T::size_from_meta(self.meta), T::align()).unwrap();
-        
+
         let (old_layout, _) = layout.repeat(old_cap).unwrap();
         let (new_layout, _) = layout.repeat(self.cap).unwrap();
 
-        self.ptr = unsafe { self.alloc.grow(self.ptr, old_layout, new_layout).expect("failed to reserve KnownUnsizedVec").as_non_null_ptr() };
+        self.ptr = unsafe {
+            self.alloc
+                .grow(self.ptr, old_layout, new_layout)
+                .expect("failed to reserve KnownUnsizedVec")
+                .as_non_null_ptr()
+        };
     }
 
     #[cold]
@@ -457,7 +482,9 @@ impl<T: ?Sized + KnownUnsized, A: Allocator> KnownUnsizedVec<T, A> {
         let (new_layout, _) = layout.repeat(self.cap).unwrap();
 
         let ptr = unsafe {
-            self.alloc.grow(self.ptr, old_layout, new_layout).expect("failed to grow KnownUnsizedVec")
+            self.alloc
+                .grow(self.ptr, old_layout, new_layout)
+                .expect("failed to grow KnownUnsizedVec")
         };
 
         self.ptr = ptr.as_non_null_ptr();
@@ -468,7 +495,9 @@ impl<T: ?Sized + KnownUnsized, A: Allocator> KnownUnsizedVec<T, A> {
         KnownUnsizedVecIter {
             element_size: self.element_size,
             meta: self.meta,
-            ptr: unsafe { NonNull::new_unchecked(self.ptr.as_ptr().add(bounds.start * self.element_size)) },
+            ptr: unsafe {
+                NonNull::new_unchecked(self.ptr.as_ptr().add(bounds.start * self.element_size))
+            },
             end: unsafe { self.ptr.as_ptr().add(bounds.end * self.element_size) },
             _marker: PhantomData,
         }
@@ -479,7 +508,9 @@ impl<T: ?Sized + KnownUnsized, A: Allocator> KnownUnsizedVec<T, A> {
         KnownUnsizedVecIterMut {
             element_size: self.element_size,
             meta: self.meta,
-            ptr: unsafe { NonNull::new_unchecked(self.ptr.as_ptr().add(bounds.start * self.element_size)) },
+            ptr: unsafe {
+                NonNull::new_unchecked(self.ptr.as_ptr().add(bounds.start * self.element_size))
+            },
             end: unsafe { self.ptr.as_ptr().add(bounds.end * self.element_size) },
             _marker: PhantomData,
         }
@@ -494,7 +525,7 @@ impl<T: ?Sized + KnownUnsized, A: Allocator> Drop for KnownUnsizedVec<T, A> {
             .unwrap()
             .repeat(self.cap)
             .unwrap();
-        
+
         unsafe { self.alloc.deallocate(self.ptr, layout) }
     }
 }
@@ -650,9 +681,17 @@ mod tests {
     #[test]
     fn value_change_aligned_slice() {
         let dummy_vc = ValueChangeNode::<Bit>::from_raw_parts(NonNull::dangling().as_ptr(), 0);
-        let &ValueChangeNode::<Bit> { ref timestamp, ref bits } = unsafe { &*dummy_vc };
-        
-        assert_eq!(unsafe { (bits as *const _ as *const u8).offset_from(timestamp as *const _ as *const u8) } as usize, mem::size_of::<u64>());
+        let &ValueChangeNode::<Bit> {
+            ref timestamp,
+            ref bits,
+        } = unsafe { &*dummy_vc };
+
+        assert_eq!(
+            unsafe {
+                (bits as *const _ as *const u8).offset_from(timestamp as *const _ as *const u8)
+            } as usize,
+            mem::size_of::<u64>()
+        );
     }
 
     #[test]
@@ -662,13 +701,16 @@ mod tests {
         let s2 = BitSlice::<Qit>::new_boxed(15);
 
         let mmappable = crate::mmap_alloc::MmappableAllocator::new();
-        
+
         let mut v = KnownUnsizedVec::<BitSlice<Qit>, _>::with_capacity_in(15, 2, &mmappable);
         v.push(&s, ());
         v.push(&s2, ());
 
         assert_eq!(v[0].into_iter().next(), Some(Qit::One));
 
-        assert_eq!(v.iter(1..).next_back().and_then(|s| s.into_iter().next()), Some(Qit::X));
+        assert_eq!(
+            v.iter(1..).next_back().and_then(|s| s.into_iter().next()),
+            Some(Qit::X)
+        );
     }
 }

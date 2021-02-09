@@ -2,7 +2,15 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::{cell::UnsafeCell, mem::{self, MaybeUninit}, ops::Deref, sync::{Mutex, atomic::{AtomicBool, Ordering}}};
+use std::{
+    cell::UnsafeCell,
+    mem::{self, MaybeUninit},
+    ops::Deref,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
+};
 
 pub struct LazyModify<T> {
     modified: AtomicBool,
@@ -27,7 +35,7 @@ impl<T> LazyModify<T> {
             let _lock = self.lock.lock().unwrap();
             if !self.modified.load(Ordering::Relaxed) {
                 let value = unsafe {
-                    mem::replace( &mut*self.value.get(), MaybeUninit::uninit()).assume_init()
+                    mem::replace(&mut *self.value.get(), MaybeUninit::uninit()).assume_init()
                 };
                 // SAFETY: If `modify` panics, it should poison the lock
                 // so it cannot be accessed again, since `self.modified` is false.

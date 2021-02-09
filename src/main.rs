@@ -2,14 +2,29 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-#![feature(allocator_api, nonnull_slice_from_raw_parts, alloc_layout_extra, slice_ptr_len, slice_ptr_get, range_bounds_assert_len, maybe_uninit_ref, trait_alias)]
+#![feature(
+    allocator_api,
+    nonnull_slice_from_raw_parts,
+    alloc_layout_extra,
+    slice_ptr_len,
+    slice_ptr_get,
+    range_bounds_assert_len,
+    maybe_uninit_ref,
+    trait_alias
+)]
 
 use anyhow::Context;
 use clap::arg_enum;
 use db::WaveformLoader;
 use info_bars::{InfoBar, InfoBars};
 use lazy_format::lazy_format;
-use std::{ffi::OsStr, fmt::Display, path::PathBuf, sync::{Arc, mpsc::sync_channel}, thread};
+use std::{
+    ffi::OsStr,
+    fmt::Display,
+    path::PathBuf,
+    sync::{mpsc::sync_channel, Arc},
+    thread,
+};
 use structopt::StructOpt;
 // use winit::{
 //     event::{Event, WindowEvent},
@@ -22,11 +37,11 @@ mod mmap_vec;
 // mod svcb;
 mod types;
 // mod vcd;
-mod vcd2;
-mod unsized_types;
-mod mmap_alloc;
-mod lazy;
 mod info_bars;
+mod lazy;
+mod mmap_alloc;
+mod unsized_types;
+mod vcd2;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "ligeia", about = "A waveform display program.")]
@@ -59,7 +74,11 @@ const LOADERS: &[(FileFormat, &'static dyn WaveformLoader)] = &[
     // (FileFormat::Svcb, &crate::svcb::SvcbLoader::new()),
 ];
 
-fn run(info_bars: Arc<InfoBars>, loader: &'static dyn WaveformLoader, source: Source) -> anyhow::Result<()> {
+fn run(
+    info_bars: Arc<InfoBars>,
+    loader: &'static dyn WaveformLoader,
+    source: Source,
+) -> anyhow::Result<()> {
     let (tx, rx) = sync_channel(1);
 
     let loader_thread = thread::spawn(move || {
@@ -87,7 +106,12 @@ fn run(info_bars: Arc<InfoBars>, loader: &'static dyn WaveformLoader, source: So
     Ok(())
 }
 
-fn memory_usage_bar_render<'a>(terminal_width: u16, bar: &'a dyn Display, progress: usize, total: usize) -> Box<dyn Display + 'a> {
+fn memory_usage_bar_render<'a>(
+    terminal_width: u16,
+    bar: &'a dyn Display,
+    progress: usize,
+    total: usize,
+) -> Box<dyn Display + 'a> {
     use termion::{color, style};
     use yapb::prefix::Binary;
     Box::new(lazy_format!(
@@ -119,39 +143,35 @@ fn main() -> anyhow::Result<()> {
 
     if let Ok(total_memory_limit) = effective_limits::memory_limit() {
         let info_bars = Arc::clone(&info_bars);
-        let memory_usage_bar = info_bars.add(
-            InfoBar::new(
-                total_memory_limit as usize,
-                memory_usage_bar_render,
-            )
-        );
+        let memory_usage_bar = info_bars.add(InfoBar::new(
+            total_memory_limit as usize,
+            memory_usage_bar_render,
+        ));
 
-        thread::spawn(move || {
-            loop {
-                let usage = mmap_alloc::MmappableAllocator::rough_total_usage();
-                memory_usage_bar.set_progress(usage);
+        thread::spawn(move || loop {
+            let usage = mmap_alloc::MmappableAllocator::rough_total_usage();
+            memory_usage_bar.set_progress(usage);
 
-                info_bars.draw().unwrap();
+            info_bars.draw().unwrap();
 
-                thread::sleep(std::time::Duration::from_millis(100));
-            }
+            thread::sleep(std::time::Duration::from_millis(100));
         });
     }
 
     // effective_limits::memory_limit().ok().map(|total_memory_limit| {
-        // let pb = indicatif::ProgressBar::new(total_memory_limit);
-        // pb.set_style(
-        //     indicatif::ProgressStyle::default_bar()
-        //         .template("memory usage: [{bar:.bold.dim}] {bytes}/{total_bytes} ({percent}%)")
-        // );
+    // let pb = indicatif::ProgressBar::new(total_memory_limit);
+    // pb.set_style(
+    //     indicatif::ProgressStyle::default_bar()
+    //         .template("memory usage: [{bar:.bold.dim}] {bytes}/{total_bytes} ({percent}%)")
+    // );
 
-        // thread::spawn(move || {
-        //     loop {
-        //         let usage = mmap_alloc::MmappableAllocator::rough_total_usage();
-        //         pb.set_position(usage as u64);
-        //         thread::sleep(std::time::Duration::from_millis(100));
-        //     }
-        // });
+    // thread::spawn(move || {
+    //     loop {
+    //         let usage = mmap_alloc::MmappableAllocator::rough_total_usage();
+    //         pb.set_position(usage as u64);
+    //         thread::sleep(std::time::Duration::from_millis(100));
+    //     }
+    // });
     // });
 
     let (loader, path_or_reader) = if opt.file == OsStr::new("-") {

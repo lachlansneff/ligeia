@@ -2,7 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::{fmt::{self, Display}, io::{self, stderr, Write}, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}}};
+use std::{
+    fmt::{self, Display},
+    io::{self, stderr, Write},
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
+};
 
 use yapb::{Bar, Progress};
 // use yapb::Bar;
@@ -10,11 +17,28 @@ use yapb::{Bar, Progress};
 // pub trait BarFormatter = for<'a> Fn(u16, &'a (dyn Display + 'a), usize, usize) -> Box<dyn Display + 'a> + Send + Sync;
 
 pub trait BarFormatter: Send + Sync {
-    fn format<'a>(&self, terminal_width: u16, bar: &'a dyn Display, progress: usize, total: usize) -> Box<dyn Display + 'a>;
+    fn format<'a>(
+        &self,
+        terminal_width: u16,
+        bar: &'a dyn Display,
+        progress: usize,
+        total: usize,
+    ) -> Box<dyn Display + 'a>;
 }
 
-impl<F> BarFormatter for F where F: for<'a> Fn(u16, &'a (dyn Display + 'a), usize, usize) -> Box<(dyn Display + 'a)> + Send + Sync {
-    fn format<'a>(&self, terminal_width: u16, bar: &'a dyn Display, progress: usize, total: usize) -> Box<dyn Display + 'a> {
+impl<F> BarFormatter for F
+where
+    F: for<'a> Fn(u16, &'a (dyn Display + 'a), usize, usize) -> Box<(dyn Display + 'a)>
+        + Send
+        + Sync,
+{
+    fn format<'a>(
+        &self,
+        terminal_width: u16,
+        bar: &'a dyn Display,
+        progress: usize,
+        total: usize,
+    ) -> Box<dyn Display + 'a> {
         (self)(terminal_width, bar, progress, total)
     }
 }
@@ -62,7 +86,10 @@ impl InfoBars {
         }
     }
 
-    pub fn add<F: BarFormatter + 'static>(&self, bar: InfoBar<F>) -> Arc<InfoBar<Box<dyn BarFormatter>>> {
+    pub fn add<F: BarFormatter + 'static>(
+        &self,
+        bar: InfoBar<F>,
+    ) -> Arc<InfoBar<Box<dyn BarFormatter>>> {
         let arc = Arc::new(InfoBar {
             total: bar.total,
             progress: bar.progress,
@@ -73,7 +100,11 @@ impl InfoBars {
         arc
     }
 
-    pub fn replace<F: BarFormatter + 'static>(&self, old_bar: Arc<InfoBar<Box<dyn BarFormatter>>>, new_bar: InfoBar<F>) -> Result<(), ()> {
+    pub fn replace<F: BarFormatter + 'static>(
+        &self,
+        old_bar: Arc<InfoBar<Box<dyn BarFormatter>>>,
+        new_bar: InfoBar<F>,
+    ) -> Result<(), ()> {
         let mut bars = self.bars.lock().unwrap();
         let index = bars
             .iter()
@@ -107,13 +138,15 @@ impl InfoBars {
             let mut display_bar = yapb::Bar::new();
             display_bar.set(progress as f32 / bar.total as f32);
 
-            let renderer = bar.formatter.format(terminal_width, &display_bar, progress, bar.total);
+            let renderer = bar
+                .formatter
+                .format(terminal_width, &display_bar, progress, bar.total);
 
             writeln!(output, "\r{}{}", termion::clear::AfterCursor, renderer)?;
         }
 
         output.flush()?;
-        
+
         Ok(())
     }
 }

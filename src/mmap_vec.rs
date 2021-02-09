@@ -84,9 +84,7 @@ impl<T: VariableLength, Realloc: ReallocOption> VarMmapVec<T, Realloc> {
 
         f.set_len(cap)?;
 
-        let mapping = unsafe { MmapOptions::new()
-            .len(cap as usize)
-            .map_mut(&f)? };
+        let mapping = unsafe { MmapOptions::new().len(cap as usize).map_mut(&f)? };
 
         Ok(Self {
             f,
@@ -199,7 +197,7 @@ pub struct VarVecWindow<'a, T> {
 }
 
 impl<'a, T: VariableLength + ConsistentSize> VarVecWindow<'a, T> {
-    // /// In units of 
+    // /// In units of
     #[track_caller]
     pub fn take_window(&mut self, size: usize) -> VarVecWindow<'a, T> {
         let data = mem::take(&mut self.data);
@@ -217,7 +215,7 @@ impl<'a, T: VariableLength + ConsistentSize> VarVecWindow<'a, T> {
         unsafe { self.data.as_ptr().offset_from(self.origin) as usize }
     }
 
-    pub fn iter<Data>(&'a self, meta: T::Meta) -> impl Iterator<Item=Data> + 'a
+    pub fn iter<Data>(&'a self, meta: T::Meta) -> impl Iterator<Item = Data> + 'a
     where
         Data: VariableRead<'a, T>,
         T::Meta: Copy,
@@ -238,7 +236,7 @@ impl<'a, T: VariableLength + ConsistentSize> VarVecWindow<'a, T> {
 impl<'a, T: VariableLength> VarVecWindow<'a, T> {
     pub fn push<Data>(&mut self, meta: T::Meta, data: Data)
     where
-        Data: VariableWrite<T>
+        Data: VariableWrite<T>,
     {
         assert!(self.data.len() > 0, "the window has zero size");
         let slice = mem::take(&mut self.data);
@@ -250,7 +248,7 @@ impl<'a, T: VariableLength> VarVecWindow<'a, T> {
 impl<'a, T: VariableLength> VarVecWindow<'a, T> {
     pub fn push_rev<Data>(&mut self, meta: T::Meta, data: Data)
     where
-        Data: VariableWrite<T> + ConsistentSize<T>
+        Data: VariableWrite<T> + ConsistentSize<T>,
     {
         assert!(self.data.len() > 0, "the window has zero size");
         let size = Data::size(meta);
@@ -258,7 +256,7 @@ impl<'a, T: VariableLength> VarVecWindow<'a, T> {
         let (rest, dest) = slice.split_at_mut(slice.len() - size);
         self.data = rest;
 
-        data.write_variable(meta, dest);        
+        data.write_variable(meta, dest);
     }
 }
 

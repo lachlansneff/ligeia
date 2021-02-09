@@ -156,7 +156,7 @@ macro_rules! define_item_containers {
                                 $item_variant => $bits,
                             )*
                         };
-        
+
                         *byte |= raw_qit << (i * 2);
                     }
                 }
