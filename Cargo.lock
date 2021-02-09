@@ -77,6 +77,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "effective-limits"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5111efa2aeaa4420918366de6e16ad8f03a34a14ba7ecab4d3bcf5e545d8825f"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "sys-info",
+ "thiserror",
+ "winapi",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -117,6 +130,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lazy_format"
+version = "1.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f389fd31a70d3b0f1d9d80e8f7a9366127fe5fb819f4d4dd21122a167352da8f"
+
+[[package]]
 name = "lazy_static"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -136,14 +155,17 @@ dependencies = [
  "anyhow",
  "circular",
  "clap",
+ "effective-limits",
+ "lazy_format",
  "lazy_static",
  "mapr",
  "structopt",
- "sys-info",
  "tempfile",
+ "termion",
  "thiserror",
  "varint-simd",
  "vcd",
+ "yapb",
 ]
 
 [[package]]
@@ -155,6 +177,12 @@ dependencies = [
  "libc",
  "winapi",
 ]
+
+[[package]]
+name = "numtoa"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8f8bdf33df195859076e54ab11ee78a1b208382d3a26ec40d142ffc1ecc49ef"
 
 [[package]]
 name = "ppv-lite86"
@@ -252,6 +280,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "41cc0f7e4d5d4544e8861606a285bb08d3e70712ccc7d2b84d7c0ccfaf4b05ce"
 
 [[package]]
+name = "redox_syscall"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05ec8ca9416c5ea37062b502703cd7fcb207736bc294f6e0cf367ac6fc234570"
+dependencies = [
+ "bitflags",
+]
+
+[[package]]
+name = "redox_termios"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8440d8acb4fd3d277125b4bd01a6f38aee8d814b3b5fc09b3f2b825d37d3fe8f"
+dependencies = [
+ "redox_syscall 0.2.4",
+]
+
+[[package]]
 name = "remove_dir_all"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -303,9 +349,9 @@ dependencies = [
 
 [[package]]
 name = "sys-info"
-version = "0.8.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f3e7ba888a12ddcf0084e36ae4609b055845f38022d1946b67356fbc27d5795"
+checksum = "bb0fb3fecc8cf6ffd2b75b19f0b1e56770fc8d370fed8bb82ce90e29014951c3"
 dependencies = [
  "cc",
  "libc",
@@ -320,9 +366,21 @@ dependencies = [
  "cfg-if",
  "libc",
  "rand",
- "redox_syscall",
+ "redox_syscall 0.1.57",
  "remove_dir_all",
  "winapi",
+]
+
+[[package]]
+name = "termion"
+version = "1.5.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "077185e2eac69c3f8379a4298e1e07cd36beb962290d4a51199acf0fdc10607e"
+dependencies = [
+ "libc",
+ "numtoa",
+ "redox_syscall 0.2.4",
+ "redox_termios",
 ]
 
 [[package]]
@@ -381,7 +439,7 @@ checksum = "813b8fabae7d07423960842f397c10a4f1a873ccb9a9253bac7fdfe12397366d"
 [[package]]
 name = "vcd"
 version = "0.6.1"
-source = "git+https://github.com/lachlansneff/rust-vcd.git#1f6ba12912bddc1556c02095835d713bb08a6bbf"
+source = "git+https://github.com/lachlansneff/rust-vcd.git#38dac5e2f8c1672ec30b1516093be922495af29b"
 
 [[package]]
 name = "vec_map"
@@ -422,3 +480,9 @@ name = "winapi-x86_64-pc-windows-gnu"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
+
+[[package]]
+name = "yapb"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9c524375eb242d38281ceeed55313a604b5e816f01abdf414aa76f2989250f1"

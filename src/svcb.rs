@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use crate::{db::{WaveformDatabase, WaveformLoader}, mmap_vec::{VarMmapVec, VariableLength, VariableWrite}, types::{BitSlice, BitVec, QitSlice, SizeInBytes}};
+use crate::{mmap_vec::{VarMmapVec, VariableLength, VariableWrite}, types::{BitSlice, BitVec, QitSlice, SizeInBytes}};
 use anyhow::anyhow;
 use std::{collections::HashMap, convert::TryInto, fs::File, future::Future, io::{self, Read}, num::NonZeroUsize, str, sync::Arc, time::Instant};
 use thiserror::Error;

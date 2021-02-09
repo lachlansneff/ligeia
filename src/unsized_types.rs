@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::{alloc::{Allocator, Layout}, fmt::{Display, Debug}, marker::PhantomData, mem, ops::{Index, IndexMut, RangeBounds}, ptr::{self, NonNull}, slice};
+use std::{alloc::{Allocator, Layout}, fmt::{Display, Debug}, hint::unreachable_unchecked, marker::PhantomData, mem, ops::{Index, IndexMut, RangeBounds}, ptr::{self, NonNull}, slice};
 // use rfc2580::{MetaData, Pointee, from_raw_parts, into_raw_parts};
 
 pub trait BitType: Copy + Clone + PartialEq + Eq + Display {
@@ -15,6 +15,8 @@ pub trait BitType: Copy + Clone + PartialEq + Eq + Display {
 
     fn from_bits(bits: u8) -> Self;
     fn to_bits(self) -> u8;
+
+    fn average(a: Self, b: Self) -> Self;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -49,12 +51,16 @@ impl BitType for Bit {
         match bits & Self::MASK {
             0b0 => Bit::Zero,
             0b1 => Bit::One,
-            _ => unreachable!()     
+            _ => unsafe { unreachable_unchecked() },
         }
     }
 
     fn to_bits(self) -> u8 {
         self as u8
+    }
+
+    fn average(a: Self, b: Self) -> Self {
+        Self::from_bits(a.to_bits() | b.to_bits())
     }
 }
 impl Display for Qit {
@@ -79,12 +85,20 @@ impl BitType for Qit {
             1 => Qit::One,
             2 => Qit::X,
             3 => Qit::Z,
-            _ => unreachable!()     
+            _ => unsafe{ unreachable_unchecked() }
         }
     }
 
     fn to_bits(self) -> u8 {
         self as u8
+    }
+
+    fn average(a: Self, b: Self) -> Self {
+        if a == Qit::X || b == Qit::X {
+            Qit::X
+        } else {
+            Self::from_bits(a.to_bits() | b.to_bits())
+        }
     }
 }
 
@@ -169,6 +183,11 @@ impl<T: BitType> BitSlice<T> {
         unsafe { slice::from_raw_parts_mut(self.data.as_mut_ptr(), bytes) }
     }
 
+    pub fn copy_from(&mut self, other: &Self) {
+        assert_eq!(self.len(), other.len());
+        self.bytes_mut().copy_from_slice(other.bytes());
+    }
+
     /// Update this in-place.
     pub fn update<F: FnMut(T) -> T>(&mut self, mut f: F) {
         for byte in self.bytes_mut() {
@@ -198,6 +217,13 @@ impl<T: BitType> BitSlice<T> {
         }
     }
 }
+
+impl<T: BitType> PartialEq for BitSlice<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.into_iter().eq(other.into_iter())
+    }
+}
+impl<T: BitType> Eq for BitSlice<T> {}
 
 unsafe impl<T: BitType> KnownUnsized for BitSlice<T> {
     type Parts = ();
@@ -349,6 +375,8 @@ pub struct KnownUnsizedVec<T: ?Sized + KnownUnsized, A: Allocator> {
     _marker: PhantomData<NonNull<T>>,
 }
 
+unsafe impl<T: ?Sized + KnownUnsized, A: Allocator + Send> Send for KnownUnsizedVec<T, A> {}
+
 impl<T: ?Sized + KnownUnsized, A: Allocator> KnownUnsizedVec<T, A> {
     pub fn with_capacity_in(meta: usize, cap: usize, alloc: A) -> Self {
         let (layout, element_size) = Layout::from_size_align(T::size_from_meta(meta), T::align())
@@ -367,6 +395,14 @@ impl<T: ?Sized + KnownUnsized, A: Allocator> KnownUnsizedVec<T, A> {
             alloc,
             _marker: PhantomData,
         }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn meta(&self) -> usize {
+        self.meta
     }
 
     pub fn push(&mut self, slice: &BitSlice<T::Bit>, parts: T::Parts) {
@@ -391,13 +427,27 @@ impl<T: ?Sized + KnownUnsized, A: Allocator> KnownUnsizedVec<T, A> {
         self.len += 1;
     }
 
+    pub fn reserve(&mut self, additional: usize) {
+        let old_cap = self.cap;
+        self.cap += additional;
+
+        let layout = Layout::from_size_align(T::size_from_meta(self.meta), T::align()).unwrap();
+        
+        let (old_layout, _) = layout.repeat(old_cap).unwrap();
+        let (new_layout, _) = layout.repeat(self.cap).unwrap();
+
+        self.ptr = unsafe { self.alloc.grow(self.ptr, old_layout, new_layout).expect("failed to reserve KnownUnsizedVec").as_non_null_ptr() };
+    }
+
     #[cold]
     fn realloc(&mut self) {
         let old_cap = self.cap;
         if self.cap == 0 {
             self.cap = 1;
+        } else if self.cap == 1 {
+            self.cap = 4;
         } else {
-            self.cap *= 2;
+            self.cap = (self.cap as f64 * 1.3).round() as usize;
         }
 
         let layout = Layout::from_size_align(T::size_from_meta(self.meta), T::align()).unwrap();

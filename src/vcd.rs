@@ -626,25 +626,6 @@ impl ConsistentSize for Node<'_> {
     }
 }
 
-struct VcdDb {
-    /// Femtoseconds per timestep
-    timescale: u128,
-}
-
-impl WaveformDatabase for VcdDb {
-    fn timescale(&self) -> u128 {
-        self.timescale
-    }
-
-    fn tree(&self) -> Arc<[crate::db::Scope]> {
-        todo!()
-    }
-
-    fn load_waveform(&self, id: crate::db::VariableId) -> Box<dyn Future<Output = crate::db::Waveform>> {
-        todo!()
-    }
-}
-
 pub struct VcdLoader {}
 
 impl VcdLoader {

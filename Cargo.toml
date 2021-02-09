@@ -5,8 +5,8 @@ authors = ["Lachlan Sneff <lachlan@charted.space>"]
 edition = "2018"
 
 [profile.release]
-debug = true
-lto = "fat"
+# debug = true
+# lto = "fat"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -27,8 +27,13 @@ ahash = "0.6.2"
 anyhow = "1.0"
 circular = "0.3"
 # rfc2580 = "0.2.0"
-sys-info = "0.8.0"
+# sys-info = "0.8.0"
 lazy_static = "1.4"
+effective-limits = "0.5.2"
+# indicatif = "0.15.0"
+yapb = "0.3.2"
+termion = "1.5.6"
+lazy_format = "1.8.3"
 
 [dependencies.vcd]
 git = "https://github.com/lachlansneff/rust-vcd.git"
