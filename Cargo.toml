@@ -13,7 +13,9 @@ edition = "2018"
 [dependencies]
 structopt = "0.3"
 clap = "*"
-wgpu = "0.6"
+wgpu = "0.7"
+wgpu-subscriber = "0.1"
+
 mapr = "0.8.0"
 # leb128 = "0.2.4"
 varint-simd = "0.1.1"

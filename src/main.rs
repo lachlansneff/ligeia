@@ -15,7 +15,7 @@
 
 use anyhow::Context;
 use clap::arg_enum;
-use db::WaveformLoader;
+use waveform::{Waveform, WaveformLoader};
 use info_bars::{InfoBar, InfoBars};
 use lazy_format::lazy_format;
 use std::{
@@ -32,7 +32,7 @@ use structopt::StructOpt;
 //     window::WindowBuilder,
 // };
 
-mod db;
+mod waveform;
 mod mmap_vec;
 // mod svcb;
 mod types;
@@ -49,7 +49,7 @@ mod gui;
 struct Opt {
     /// Input file
     #[structopt(parse(from_os_str))]
-    file: PathBuf,
+    file: Option<PathBuf>,
 
     /// File format
     #[structopt(long = "format", possible_values = &FileFormat::variants(), case_insensitive = true)]
@@ -79,7 +79,7 @@ fn run(
     info_bars: Arc<InfoBars>,
     loader: &'static dyn WaveformLoader,
     source: Source,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Waveform> {
     let (tx, rx) = sync_channel(1);
 
     let loader_thread = thread::spawn(move || {
@@ -104,7 +104,7 @@ fn run(
 
     loader_thread.join().unwrap();
 
-    gui::begin()
+    Ok(waveform)
 }
 
 fn memory_usage_bar_render<'a>(
@@ -159,34 +159,14 @@ fn main() -> anyhow::Result<()> {
         });
     }
 
-    let (loader, path_or_reader) = if opt.file == OsStr::new("-") {
-        // Just read from stdin.
-
-        let expected_format = opt
-            .format
-            .ok_or_else(|| anyhow::anyhow!("must provide a file format"))?;
-
-        let loader = LOADERS
-            .iter()
-            .find_map(|(format, loader)| {
-                if expected_format == *format {
-                    Some(*loader)
-                } else {
-                    None
-                }
-            })
-            .ok_or_else(|| anyhow::anyhow!("file format not supported"))?;
-
-        (loader, Source::Stdin)
-    } else {
-        let extension = opt
-            .file
-            .extension()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| anyhow::anyhow!("file does not have an extension"))?;
-
-        let loader = if let Some(expected_format) = opt.format {
-            LOADERS
+    let waveform = if let Some(file) = opt.file {
+        let (loader, path_or_reader) = if file == OsStr::new("-") {
+            // Just read from stdin.
+            let expected_format = opt
+                .format
+                .ok_or_else(|| anyhow::anyhow!("must provide a file format"))?;
+    
+            let loader = LOADERS
                 .iter()
                 .find_map(|(format, loader)| {
                     if expected_format == *format {
@@ -195,33 +175,57 @@ fn main() -> anyhow::Result<()> {
                         None
                     }
                 })
-                .ok_or_else(|| anyhow::anyhow!("file format not supported"))?
+                .ok_or_else(|| anyhow::anyhow!("file format not supported"))?;
+    
+            (loader, Source::Stdin)
         } else {
-            LOADERS
-                .iter()
-                .find_map(|(_, loader)| {
-                    if loader.supports_file_extension(extension) {
-                        Some(*loader)
-                    } else {
-                        None
-                    }
-                })
-                .ok_or_else(|| anyhow::anyhow!("file format not supported"))?
+            let extension = file
+                .extension()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| anyhow::anyhow!("file does not have an extension"))?;
+    
+            let loader = if let Some(expected_format) = opt.format {
+                LOADERS
+                    .iter()
+                    .find_map(|(format, loader)| {
+                        if expected_format == *format {
+                            Some(*loader)
+                        } else {
+                            None
+                        }
+                    })
+                    .ok_or_else(|| anyhow::anyhow!("file format not supported"))?
+            } else {
+                LOADERS
+                    .iter()
+                    .find_map(|(_, loader)| {
+                        if loader.supports_file_extension(extension) {
+                            Some(*loader)
+                        } else {
+                            None
+                        }
+                    })
+                    .ok_or_else(|| anyhow::anyhow!("file format not supported"))?
+            };
+    
+            println!(
+                "loading `{}` using {}",
+                file.display(),
+                loader.description()
+            );
+    
+            (loader, Source::Path(file))
         };
 
-        println!(
-            "loading `{}` using {}",
-            opt.file.display(),
-            loader.description()
-        );
-
-        (loader, Source::Path(opt.file))
+        Some(run(info_bars, loader, path_or_reader)?)
+    } else {
+        None
     };
 
-    run(info_bars, loader, path_or_reader)?;
+    gui::begin(waveform)?;
 
     // println!("pausing for one second");
-    thread::sleep(std::time::Duration::from_secs(1));
+    // thread::sleep(std::time::Duration::from_secs(1));
 
     Ok(())
 }

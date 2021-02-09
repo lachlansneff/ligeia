@@ -1,5 +1,5 @@
 use crate::{
-    db::{
+    waveform::{
         Forest, NodeTree, Scope, TreeOrLayer, Variable, VariableId, VariableInfo, Waveform,
         WaveformLoader,
     },
