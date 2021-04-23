@@ -255,10 +255,9 @@ impl<A: Allocator + Clone> WaveformLoader<A> for VcdLoader {
         &self,
         allocator: A,
         progress: &mut dyn Progress,
-        path: &std::path::Path,
+        mut file: File,
     ) -> Result<Waveform<A>, LoadError> {
-        let mut f = File::open(&path)?;
-        let map = unsafe { mapr::Mmap::map(&f) };
+        let map = unsafe { mapr::Mmap::map(&file) };
 
         let waveform = match map {
             Ok(map) => {
@@ -284,7 +283,7 @@ impl<A: Allocator + Clone> WaveformLoader<A> for VcdLoader {
             Err(_) => {
                 println!("mmap failed, attempting to load file as a stream");
 
-                return self.load_stream(allocator, progress, &mut f);
+                return self.load_stream(allocator, progress, &mut file);
             }
         };
 

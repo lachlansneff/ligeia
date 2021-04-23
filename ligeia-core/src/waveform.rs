@@ -7,14 +7,7 @@ use crate::{
     progress::Progress,
     unsized_types::{Bit, BitSlice, BitType, KnownUnsizedVec, Qit, ValueChangeNode},
 };
-use std::{
-    alloc::Allocator,
-    collections::HashMap,
-    io::{self, Read},
-    iter,
-    path::Path,
-    sync::{Arc, Mutex},
-};
+use std::{alloc::Allocator, collections::HashMap, fs::File, io::{self, Read}, iter, path::Path, sync::{Arc, Mutex}};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -67,7 +60,7 @@ pub trait WaveformLoader<A: Allocator + Clone>: Sync {
         &self,
         allocator: A,
         progress: &mut dyn Progress,
-        path: &Path,
+        file: File,
     ) -> Result<Waveform<A>, LoadError>;
 
     fn load_stream(

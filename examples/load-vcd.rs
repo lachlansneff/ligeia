@@ -1,4 +1,4 @@
-use std::{env, error, path::Path};
+use std::{env, error, path::Path, fs::File};
 
 use ligeia_core::{self, mmap_alloc::MmappableAllocator, waveform::WaveformLoader, Progress};
 use ligeia_vcd::VcdLoader;
@@ -21,8 +21,9 @@ fn main() -> Result<(), Box<dyn error::Error>> {
     }
 
     let path = Path::new(&args[0]);
+    let f = File::open(path)?;
 
-    let _waveform = LOADER.load_file(MmappableAllocator::new(), &mut NullProgress, path)?;
+    let _waveform = LOADER.load_file(MmappableAllocator::new(), &mut NullProgress, f)?;
 
     println!("loaded vcd");
 
