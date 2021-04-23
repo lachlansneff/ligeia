@@ -8,6 +8,7 @@ edition = "2018"
 members = [
     "ligeia-core",
     "ligeia-vcd",
+    "ligeia-svcb",
 ]
 
 [profile.release]
@@ -17,6 +18,9 @@ members = [
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+ligeia-core = { path = "ligeia-core" }
+ligeia-vcd = { path = "ligeia-vcd" }
+
 # structopt = "0.3"
 # clap = "*"
 # wgpu = "0.7"
@@ -41,7 +45,3 @@ members = [
 # [dependencies.vcd]
 # git = "https://github.com/lachlansneff/rust-vcd.git"
 # # path = "../rust-vcd"
-
-[dev-dependencies]
-ligeia-core = { path = "ligeia-core" }
-ligeia-vcd = { path = "ligeia-vcd" }
