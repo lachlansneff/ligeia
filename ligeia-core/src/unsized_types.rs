@@ -491,7 +491,7 @@ impl<T: ?Sized + KnownUnsized, A: Allocator> KnownUnsizedVec<T, A> {
     }
 
     pub fn iter<B: RangeBounds<usize>>(&self, bounds: B) -> KnownUnsizedVecIter<T> {
-        let bounds = bounds.assert_len(self.len);
+        let bounds = slice::range(bounds, ..self.len);
         KnownUnsizedVecIter {
             element_size: self.element_size,
             meta: self.meta,
@@ -504,7 +504,7 @@ impl<T: ?Sized + KnownUnsized, A: Allocator> KnownUnsizedVec<T, A> {
     }
 
     pub fn iter_mut<B: RangeBounds<usize>>(&mut self, bounds: B) -> KnownUnsizedVecIterMut<T> {
-        let bounds = bounds.assert_len(self.len);
+        let bounds = slice::range(bounds, ..self.len);
         KnownUnsizedVecIterMut {
             element_size: self.element_size,
             meta: self.meta,

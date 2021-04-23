@@ -4,6 +4,12 @@ version = "0.1.0"
 authors = ["Lachlan Sneff <lachlan@charted.space>"]
 edition = "2018"
 
+[workspace]
+members = [
+    "ligeia-core",
+    "ligeia-vcd",
+]
+
 [profile.release]
 # debug = true
 # lto = "fat"
@@ -11,31 +17,31 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-structopt = "0.3"
-clap = "*"
-wgpu = "0.7"
-wgpu-subscriber = "0.1"
+# structopt = "0.3"
+# clap = "*"
+# wgpu = "0.7"
+# wgpu-subscriber = "0.1"
 
-mapr = "0.8.0"
-# leb128 = "0.2.4"
-varint-simd = "0.1.1"
-tempfile = "3.1.0"
-winit = "0.23.0"
-futures = "0.3.12"
-# nom = "6.0"
-thiserror = "1.0"
-ahash = "0.6.2"
-anyhow = "1.0"
-circular = "0.3"
-# rfc2580 = "0.2.0"
-# sys-info = "0.8.0"
-lazy_static = "1.4"
-effective-limits = "0.5.2"
-# indicatif = "0.15.0"
-yapb = "0.3.2"
-termion = "1.5.6"
-lazy_format = "1.8.3"
+# # leb128 = "0.2.4"
+# varint-simd = "0.1.1"
+# winit = "0.23.0"
+# futures = "0.3.12"
+# # nom = "6.0"
+# thiserror = "1.0"
+# ahash = "0.6.2"
+# anyhow = "1.0"
+# circular = "0.3"
+# # rfc2580 = "0.2.0"
+# # sys-info = "0.8.0"
+# # indicatif = "0.15.0"
+# yapb = "0.3.2"
+# termion = "1.5.6"
+# lazy_format = "1.8.3"
 
-[dependencies.vcd]
-git = "https://github.com/lachlansneff/rust-vcd.git"
-# path = "../rust-vcd"
+# [dependencies.vcd]
+# git = "https://github.com/lachlansneff/rust-vcd.git"
+# # path = "../rust-vcd"
+
+[dev-dependencies]
+ligeia-core = { path = "ligeia-core" }
+ligeia-vcd = { path = "ligeia-vcd" }

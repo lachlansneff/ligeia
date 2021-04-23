@@ -3,19 +3,27 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use crate::{
-    info_bars::InfoBars,
     lazy::LazyModify,
-    mmap_alloc::MmappableAllocator,
+    progress::Progress,
     unsized_types::{Bit, BitSlice, BitType, KnownUnsizedVec, Qit, ValueChangeNode},
 };
 use std::{
+    alloc::Allocator,
     collections::HashMap,
-    future::Future,
-    io::Read,
+    io::{self, Read},
     iter,
     path::Path,
     sync::{Arc, Mutex},
 };
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum LoadError {
+    #[error("io error")]
+    Io(#[from] io::Error),
+    #[error("parsing error: {0}")]
+    Parse(String),
+}
 
 #[derive(Debug)]
 pub struct Scope {
@@ -49,17 +57,26 @@ pub struct Variable {
     pub info: VariableInfo,
 }
 
-pub trait WaveformLoader: Sync {
+pub trait WaveformLoader<A: Allocator + Clone>: Sync {
     fn supports_file_extension(&self, s: &str) -> bool;
     fn description(&self) -> String;
 
     /// A file is technically a stream, but generally, specializing parsers for files can be more efficient than parsing
     /// from a generic reader.
-    fn load_file(&self, info_bars: &InfoBars, path: &Path) -> anyhow::Result<Waveform>;
-    fn load_stream(&self, info_bars: &InfoBars, reader: &mut dyn Read) -> anyhow::Result<Waveform>;
-}
+    fn load_file(
+        &self,
+        allocator: A,
+        progress: &mut dyn Progress,
+        path: &Path,
+    ) -> Result<Waveform<A>, LoadError>;
 
-type Alloc = MmappableAllocator;
+    fn load_stream(
+        &self,
+        allocator: A,
+        progress: &mut dyn Progress,
+        reader: &mut dyn Read,
+    ) -> Result<Waveform<A>, LoadError>;
+}
 
 // pub enum Tree {
 //     BitTree(KnownUnsizedVec<ValueChangeNode<Bit>, Alloc>),
@@ -67,16 +84,16 @@ type Alloc = MmappableAllocator;
 //     Utf8Tree()
 // }
 
-pub struct Tree<T: BitType> {
-    node_tree: KnownUnsizedVec<ValueChangeNode<T>, Alloc>,
+pub struct Tree<T: BitType, A: Allocator> {
+    node_tree: KnownUnsizedVec<ValueChangeNode<T>, A>,
 }
 
-pub enum TreeOrLayer<T: BitType> {
-    Tree(Tree<T>),
-    Layer(KnownUnsizedVec<ValueChangeNode<T>, Alloc>),
+pub enum TreeOrLayer<T: BitType, A: Allocator> {
+    Tree(Tree<T, A>),
+    Layer(KnownUnsizedVec<ValueChangeNode<T>, A>),
 }
 
-impl<T: BitType> TreeOrLayer<T> {
+impl<T: BitType, A: Allocator> TreeOrLayer<T, A> {
     fn into_tree(self) -> Self {
         match self {
             TreeOrLayer::Layer(layer) => TreeOrLayer::Tree(Tree::new(layer)),
@@ -99,8 +116,8 @@ fn layer_count_generator(first_layer_len: usize) -> impl Iterator<Item = usize> 
     })
 }
 
-impl<T: BitType> Tree<T> {
-    pub fn new(first_layer: KnownUnsizedVec<ValueChangeNode<T>, Alloc>) -> Self {
+impl<T: BitType, A: Allocator> Tree<T, A> {
+    pub fn new(first_layer: KnownUnsizedVec<ValueChangeNode<T>, A>) -> Self {
         let mut node_tree = first_layer;
         let real_data_len = node_tree.len();
         let additional_len_required = layer_count_generator(real_data_len).sum();
@@ -135,42 +152,40 @@ impl<T: BitType> Tree<T> {
     }
 }
 
-pub enum NodeTree {
-    Bit(TreeOrLayer<Bit>),
-    Qit(TreeOrLayer<Qit>),
+pub enum NodeTree<A: Allocator> {
+    Bit(TreeOrLayer<Bit, A>),
+    Qit(TreeOrLayer<Qit, A>),
 }
 
-pub struct Waveform {
+pub struct Waveform<A: Allocator> {
     pub top: Scope,
     /// Femtoseconds per timestep
     pub timescale: u128,
 
     /// Value change data
-    pub forest: Forest,
+    pub forest: Forest<A>,
 }
-
-// fn lazy_load()
 
 /// Contains a forest of trees of value change layers.
-pub struct Forest {
-    allocator: Alloc,
-    trees: Mutex<HashMap<VariableId, Arc<LazyModify<NodeTree>>>>,
+pub struct Forest<A: Allocator> {
+    // allocator: Alloc,
+    trees: Mutex<HashMap<VariableId, Arc<LazyModify<NodeTree<A>>>>>,
 }
 
-impl Forest {
-    pub fn new(allocator: Alloc, layers: impl Iterator<Item = (VariableId, NodeTree)>) -> Self {
+impl<A: Allocator> Forest<A> {
+    pub fn new(allocator: A, layers: impl Iterator<Item = (VariableId, NodeTree<A>)>) -> Self {
         let trees = layers
             .map(|(id, tree)| (id, Arc::new(LazyModify::new(tree))))
             .collect();
 
         Self {
-            allocator,
+            // allocator,
             trees: Mutex::new(trees),
         }
     }
 
     /// If the tree is not "mipmapped", this function will mipmap it before returning.
-    pub fn retrieve(&self, id: VariableId) -> Arc<LazyModify<NodeTree>> {
+    pub fn retrieve(&self, id: VariableId) -> Arc<LazyModify<NodeTree<A>>> {
         let node_tree = self.trees.lock().unwrap()[&id].clone();
         node_tree.modify(|node_tree| match node_tree {
             NodeTree::Bit(tree) => NodeTree::Bit(tree.into_tree()),

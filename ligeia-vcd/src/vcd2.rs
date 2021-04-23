@@ -1,20 +1,16 @@
-use crate::{
+use ligeia_core::{
     waveform::{
-        Forest, NodeTree, Scope, TreeOrLayer, Variable, VariableId, VariableInfo, Waveform,
-        WaveformLoader,
+        Forest, LoadError, NodeTree, Scope, TreeOrLayer, Variable, VariableId, VariableInfo,
+        Waveform, WaveformLoader,
     },
-    info_bars::{BarFormatter, InfoBar, InfoBars},
-    mmap_alloc::MmappableAllocator,
-    unsized_types::{KnownUnsizedVec, Qit, ValueChangeNode},
+    KnownUnsizedVec, Progress, Qit, ValueChangeNode,
 };
-use lazy_format::lazy_format;
 use std::{
+    alloc::Allocator,
     collections::HashMap,
-    fmt::Display,
     fs::File,
     io::{self, BufReader, Read},
     iter,
-    time::{Duration, Instant},
 };
 use vcd::{Command, Parser, ScopeItem};
 
@@ -91,10 +87,11 @@ impl VcdLoader {
         Self {}
     }
 
-    fn load_vcd<R: Read>(
+    fn load_vcd<R: Read, A: Allocator + Clone>(
+        allocator: A,
         reader: R,
         mut after_every_command: impl FnMut(&R),
-    ) -> io::Result<(Waveform, LoadingFinished)> {
+    ) -> io::Result<Waveform<A>> {
         let mut parser = Parser::new(reader);
         let header = parser.parse_header()?;
 
@@ -114,19 +111,16 @@ impl VcdLoader {
 
         let (scope, mut size_map) = traverse_scopes(header);
 
-        let alloc = MmappableAllocator::new();
         let mut variables = HashMap::with_hasher(ahash::RandomState::default());
 
-        let start = Instant::now();
         let mut current_timestamp = 0;
-        let mut processed_command_count = 0;
 
         #[cold]
-        fn create_known_unsized_vec(
+        fn create_known_unsized_vec<A: Allocator + Clone>(
             size_map: &mut HashMap<VariableId, usize>,
-            alloc: &MmappableAllocator,
+            alloc: &A,
             id: VariableId,
-        ) -> KnownUnsizedVec<ValueChangeNode<Qit>, MmappableAllocator> {
+        ) -> KnownUnsizedVec<ValueChangeNode<Qit>, A> {
             let size = size_map[&id];
             KnownUnsizedVec::with_capacity_in(size, 1, alloc.clone())
         }
@@ -137,13 +131,12 @@ impl VcdLoader {
                 match command {
                     Command::Timestamp(timestamp) => {
                         current_timestamp = timestamp;
-                        processed_command_count += 1;
                     }
                     Command::ChangeVector(code, values) => {
                         let id = VariableId(code.number());
-                        let v = variables
-                            .entry(id)
-                            .or_insert_with(|| create_known_unsized_vec(&mut size_map, &alloc, id));
+                        let v = variables.entry(id).or_insert_with(|| {
+                            create_known_unsized_vec(&mut size_map, &allocator, id)
+                        });
 
                         v.push_from_iter(
                             values.into_iter().copied().map(|value| match value {
@@ -154,14 +147,12 @@ impl VcdLoader {
                             }),
                             current_timestamp,
                         );
-
-                        processed_command_count += 1;
                     }
                     Command::ChangeScalar(code, value) => {
                         let id = VariableId(code.number());
-                        let v = variables
-                            .entry(id)
-                            .or_insert_with(|| create_known_unsized_vec(&mut size_map, &alloc, id));
+                        let v = variables.entry(id).or_insert_with(|| {
+                            create_known_unsized_vec(&mut size_map, &allocator, id)
+                        });
 
                         v.push_from_iter(
                             iter::once(match value {
@@ -172,8 +163,6 @@ impl VcdLoader {
                             }),
                             current_timestamp,
                         );
-
-                        processed_command_count += 1;
                     }
                     _ => {}
                 }
@@ -188,78 +177,72 @@ impl VcdLoader {
             .into_iter()
             .map(|(id, value_change)| (id, NodeTree::Qit(TreeOrLayer::Layer(value_change))));
 
-        let time_elapsed = start.elapsed();
         let waveform = Waveform {
             top: scope,
             timescale,
 
-            forest: Forest::new(alloc, layers),
+            forest: Forest::new(allocator, layers),
         };
 
-        let loading_finished = LoadingFinished {
-            time_elapsed,
-            command_count: processed_command_count,
-        };
-
-        Ok((waveform, loading_finished))
+        Ok(waveform)
     }
 }
 
-fn progress_bar_render<'a>(
-    terminal_width: u16,
-    bar: &'a dyn Display,
-    progress: usize,
-    total: usize,
-) -> Box<dyn Display + 'a> {
-    use termion::{color, style};
-    use yapb::prefix::Binary;
-    Box::new(lazy_format!(
-        "{bold}loading{reset}: [{blue}{:width$}{reset}] {bold}{memory_used}B{style_reset}/{bold}{memory_avail}B{style_reset} ({percent:2.0}%)",
-        bar,
-        blue=color::Fg(color::Blue),
-        reset=color::Fg(color::Reset),
-        style_reset=style::Reset,
-        bold=style::Bold,
-        width=(terminal_width as usize) - 35,
+// fn progress_bar_render<'a>(
+//     terminal_width: u16,
+//     bar: &'a dyn Display,
+//     progress: usize,
+//     total: usize,
+// ) -> Box<dyn Display + 'a> {
+//     use termion::{color, style};
+//     use yapb::prefix::Binary;
+//     Box::new(lazy_format!(
+//         "{bold}loading{reset}: [{blue}{:width$}{reset}] {bold}{memory_used}B{style_reset}/{bold}{memory_avail}B{style_reset} ({percent:2.0}%)",
+//         bar,
+//         blue=color::Fg(color::Blue),
+//         reset=color::Fg(color::Reset),
+//         style_reset=style::Reset,
+//         bold=style::Bold,
+//         width=(terminal_width as usize) - 35,
 
-        memory_used=Binary(progress as f64),
-        memory_avail=Binary(total as f64),
+//         memory_used=Binary(progress as f64),
+//         memory_avail=Binary(total as f64),
 
-        percent=(progress as f32 / total as f32) * 100.0,
-    ))
-}
+//         percent=(progress as f32 / total as f32) * 100.0,
+//     ))
+// }
 
-struct LoadingFinished {
-    time_elapsed: Duration,
-    command_count: usize,
-}
+// struct LoadingFinished {
+//     time_elapsed: Duration,
+//     command_count: usize,
+// }
 
-impl BarFormatter for LoadingFinished {
-    fn format<'a>(
-        &self,
-        _terminal_width: u16,
-        _bar: &'a dyn Display,
-        _progress: usize,
-        total: usize,
-    ) -> Box<dyn Display + 'a> {
-        use termion::style;
-        use yapb::prefix::Binary;
+// impl BarFormatter for LoadingFinished {
+//     fn format<'a>(
+//         &self,
+//         _terminal_width: u16,
+//         _bar: &'a dyn Display,
+//         _progress: usize,
+//         total: usize,
+//     ) -> Box<dyn Display + 'a> {
+//         use termion::style;
+//         use yapb::prefix::Binary;
 
-        let command_count = self.command_count;
-        let time_elapsed = self.time_elapsed.as_secs_f32();
+//         let command_count = self.command_count;
+//         let time_elapsed = self.time_elapsed.as_secs_f32();
 
-        Box::new(lazy_format!(
-            "{bold}{size}B{style_reset} loaded successfully ({bold}{commands}{style_reset} commands in {bold}{time:.2}s{style_reset})",
-            size=Binary(total as f64),
-            bold=style::Bold,
-            style_reset=style::Reset,
-            commands=command_count,
-            time=time_elapsed,
-        ))
-    }
-}
+//         Box::new(lazy_format!(
+//             "{bold}{size}B{style_reset} loaded successfully ({bold}{commands}{style_reset} commands in {bold}{time:.2}s{style_reset})",
+//             size=Binary(total as f64),
+//             bold=style::Bold,
+//             style_reset=style::Reset,
+//             commands=command_count,
+//             time=time_elapsed,
+//         ))
+//     }
+// }
 
-impl WaveformLoader for VcdLoader {
+impl<A: Allocator + Clone> WaveformLoader<A> for VcdLoader {
     fn supports_file_extension(&self, s: &str) -> bool {
         matches!(s, "vcd")
     }
@@ -268,43 +251,61 @@ impl WaveformLoader for VcdLoader {
         "the Value Change Dump (VCD) loader".to_string()
     }
 
-    fn load_file(&self, info_bars: &InfoBars, path: &std::path::Path) -> anyhow::Result<Waveform> {
+    fn load_file(
+        &self,
+        allocator: A,
+        progress: &mut dyn Progress,
+        path: &std::path::Path,
+    ) -> Result<Waveform<A>, LoadError> {
         let mut f = File::open(&path)?;
         let map = unsafe { mapr::Mmap::map(&f) };
 
         let waveform = match map {
             Ok(map) => {
-                let progress_bar = info_bars.add(InfoBar::new(map.len(), progress_bar_render));
+                // let progress_bar = info_bars.add(InfoBar::new(map.len(), progress_bar_render));
                 let mut transient_command_count = 0;
                 let total_len = map.len();
-                let (waveform, loading_finished) = Self::load_vcd(&map[..], |map| {
+                progress.start(Some(total_len));
+
+                let waveform = Self::load_vcd(allocator, &map[..], |map| {
                     transient_command_count += 1;
                     if transient_command_count == 10_000 {
-                        progress_bar.set_progress(total_len - map.len());
+                        // progress_bar.set_progress(total_len - map.len());
+                        progress.set(total_len - map.len());
                         transient_command_count = 0;
                     }
                 })?;
                 // info_bars.remove(progress_bar).unwrap();
-                info_bars
-                    .replace(progress_bar, InfoBar::new(total_len, loading_finished))
-                    .unwrap();
+                // info_bars
+                //     .replace(progress_bar, InfoBar::new(total_len, loading_finished))
+                //     .unwrap();
                 waveform
             }
             Err(_) => {
                 println!("mmap failed, attempting to load file as a stream");
 
-                return self.load_stream(info_bars, &mut f);
+                return self.load_stream(allocator, progress, &mut f);
             }
         };
 
         Ok(waveform)
     }
 
-    fn load_stream(&self, info_bars: &InfoBars, reader: &mut dyn Read) -> anyhow::Result<Waveform> {
-        let (waveform, loading_finished) =
-            Self::load_vcd(BufReader::with_capacity(1_000_000, reader), |_| {})?;
+    fn load_stream(
+        &self,
+        allocator: A,
+        progress: &mut dyn Progress,
+        reader: &mut dyn Read,
+    ) -> Result<Waveform<A>, LoadError> {
+        progress.start(None);
 
-        info_bars.add(InfoBar::new(0, loading_finished));
+        let waveform = Self::load_vcd(
+            allocator,
+            BufReader::with_capacity(1_000_000, reader),
+            |_| {},
+        )?;
+
+        progress.finish();
 
         Ok(waveform)
     }
