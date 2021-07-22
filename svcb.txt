@@ -1,99 +1,118 @@
+/// Rev 1 of the Streamed Value Change Blocks (SVCB) file format.
 
-# Rev 1 of the Streamed Value Change Blocks (SVCB) file format.
+/// Types used in the file format
 
-# Types used in the file format
-
-u1 := a single bit, stored as compactly as possible
-u2 := 2 bits, stored as compactly as possible
+u1 := 1 bit integer, little endian, eight u1 to a byte
+u2 := 2 bit integer, little endian, four u2 to a byte
+u3 := 3 bit integer, little endian, two u3 to a byte (stored in lsb order)
 u32 := 32 bit unsigned integer, little endian
 u64 := 64 bit unsigned integer, little endian
-varu32 := varuint, maximum of u32::MAX
-varu64 := varuint, maximum of u64::MAX,
+lebu32 := lebu128, maximum of u32::MAX
+lebu64 := lebu128, maximum of u64::MAX,
 
-bit := u1 ∈ { 0, 1 }
-qit := u2 ∈ { 0, 1, x := 2, z := 3 }
+// up to eight two-logic values to a byte
+two-logic := u1 ∈ { 
+    0,
+    1,
+}
 
-unsized-vec(T) :=
-    sequence of T
+// up to four four-logic values to a byte
+four-logic := u2 ∈ {
+    0,
+    1,
+    2 (unknown),
+    3 (high impedance),
+}
+
+// up to 2 eight-logic values to a byte
+eight-logic := u3 ∈ {
+    0b100 (zero, strong drive),
+    0b101 (one, strong drive),
+    0b000 (zero, weak drive),
+    0b001 (one, weak drive),
+    0b110 (unknown, strong drive),
+    0b010 (unknown, weak drive),
+    0b110 (zero, unknown drive),
+    0b111 (one, unknown drive),
+}
+
+unsized-vec(T) := sequence of T
+
+stream(T) := sequence of T, can be streamed rather than all present in memory
 
 vec(T) :=
     length := u32
     sequence of T, *length* items long
 
 compact-vec(T) :=
-    length := varu32
+    length := lebu32
     sequence of T, *length* items long
 
 string := vec(utf-8 encoded byte)
 
 storage :=
     id := u32
-    type := u32 ∈ { BINARY := 0, QUATERNARY := 1, UTF-8 := 2 }
+    type := u32 ∈ { TWO_LOGIC := 0, FOUR_LOGIC := 1, EIGHT_LOGIC := 2 }
     length := u32
-    {
-        lsb := u32, if *type* ∈ { BINARY, QUATERNARY }
-    }
-
-integer-variable-data :=
-    msb := u32 // most significant bit index
-    lsb := u32 // least significant bit index
-    signedness := u32 ∈ { SIGNED_TWOS_COMPLEMENT := 0, UNSIGNED_TWOS_COMPLEMENT := 1 }
+    //
+    lsb := u32
 
 enum-specification :=
-    assert(*storages[storage-id].type* = BINARY)
     name := string
-    value := unsized-vec(bit)
+    value := unsized-vec(two-logic)
 
 variable :=
     scope-id := u32
     name := string
     interpretation := u32 ∈ { NONE := 0, INTEGER := 1, ENUM := 2, UTF-8 := 3 }
-    {
-        storage-id := u32, if *interpretation* ∈ { NONE, ENUM, UTF-8 }
-        storage-ids := vec(u32), if *interpretation* = INTEGER
-    }
-    interpretation-data := {
-        integer-variable-data, if *interpretation* = INTEGER
-        enum-variable-data := vec(enum-specification), if *interpretation* = ENUM
+    match interpretation {
+        NONE | UTF-8 => storage-id := u32,
+        ENUM => {
+            storage-id := u32,
+            enum-specs := vec(enum-specification),
+        },
+        INTEGER => {
+            storage-ids := vec(u32),
+            msb := u32 // most significant bit index
+            lsb := u32 // least significant bit index
+            signedness := u32 ∈ { SIGNED_TWOS_COMPLEMENT := 0, UNSIGNED_TWOS_COMPLEMENT := 1 }
+        }
     }
 
 scope :=
     // 0 is the automatic top-level parent scope, must declare a scope before being its child
     parent-scope-id := u32
+    // Therefore, scope-id cannot be 0
     scope-id := u32
     name := string
 
 value-change :=
-    storage-id := varu32
-    value := {
-        unsized-vec(bit), if *storages[storage-id].type* = BINARY
-        unsized-vec(qit), if *storages[storage-id].type* = QUATERNARY
-        unsized-vec(utf-8 encoded character), if *storages[storage-id].type* = UTF-8
+    storage-id := lebu32
+    match storages[storage-id].type {
+        TWO_LOGIC => unsized-vec(two-logic),
+        FOUR_LOGIC => unsized-vec(four-logic),
+        EIGHT_LOGIC => unsized-vec(eight-logic),
     }
 
 block :=
     type := u8 ∈ { SCOPE := 0, VARIABLE := 1, STORAGE := 2, VALUE_CHANGE := 3, TIMESTEP := 4 }
-    {
-        scope, if *type* = SCOPE
-        variable, if *type* = VARIABLE
-        storage, if *type* = STORAGE
-
-        value-changes := compact-vec(value-change), if *type* = VALUE_CHANGE
-
-        // timesteps since previous timestep block
-        timestep := varu64, if *type* = TIMESTEP
+    match type {
+        SCOPE => scope,
+        VARIABLE => variable,
+        STORAGE => storage,
+        VALUE_CHANGE => compact-vec(value-change),
+        TIMESTEP => lebu64, // timesteps since previous timestep block
     }
 
-# The file format
-
-svcb :=
-    magic := u32, must be 'svcb'
-    version := u32 ∈ { 1 }
-    contents := {
-        rev-1, if *version* = 1
-    }
+/// The file format
 
 rev-1 :=
-    timescale := u128, femtoseconds per timestep
-    blocks := unsized-vec(block)
+    timescale := u128 // femtoseconds per timestep
+    blocks := stream(block)
 
+svcb :=
+    magic := [u8; 4], must be 's', 'v', 'c', 'b'
+    version := u32
+    match version {
+        1 => rev-1,
+    }
