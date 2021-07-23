@@ -159,7 +159,18 @@ impl<A: Allocator> ChangeBlockList<A> {
             _marker: PhantomData,
         }
     }
+
+    /// This isn't "unsafe" exactly, but if you put in a wrong offset, you'll get garbage out.
+    pub fn get_change(&self, offset: ChangeOffset) -> (ChangeHeader, *const u8) {
+        let offset = offset.0;
+        let b: [u8; 8] = self.data[offset..offset + 8].try_into().unwrap();
+        let header = b.into();
+
+        (header, &self.data[offset + 8])
+    }
 }
+
+pub struct ChangeOffset(usize);
 
 pub struct StorageIter<'a> {
     start_ptr: *const u8,
@@ -171,8 +182,8 @@ pub struct StorageIter<'a> {
 }
 
 impl<'a> Iterator for StorageIter<'a> {
-    /// Returns (ChangeHeader, offset of the value change in the ChangeBlockList)
-    type Item = (ChangeHeader, usize);
+    /// Returns the offset of the value change header.
+    type Item = ChangeOffset;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.remaining_in_block == 0 {
@@ -190,12 +201,8 @@ impl<'a> Iterator for StorageIter<'a> {
 
         let change_offset = block_offset_to_change_offset(0, self.bytes_per_change, CHANGES_PER_BLOCK - self.remaining_in_block);
         unsafe {
-            let change_header_ptr = self.block_pointer.add(change_offset) as *const [u8; 8];
-            let change_ptr = change_header_ptr.add(1) as *const u8;
-            Some((
-                change_header_ptr.read().into(),
-                change_ptr.offset_from(self.start_ptr) as usize,
-            ))
+            let header_offset = self.block_pointer.add(change_offset).offset_from(self.start_ptr) as usize;
+            Some(ChangeOffset(header_offset))
         }
     }
 

@@ -3,7 +3,7 @@ use crate::unit::TwoLogic;
 
 mod change;
 
-pub use self::change::ChangeBlockList;
+pub use self::change::{ChangeBlockList, StorageIter, ChangeOffset, ChangeHeader};
 
 #[derive(Clone, Copy)]
 pub enum StorageType {
