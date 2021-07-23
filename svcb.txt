@@ -4,7 +4,7 @@
 
 u1 := 1 bit integer, little endian, eight u1 to a byte
 u2 := 2 bit integer, little endian, four u2 to a byte
-u3 := 3 bit integer, little endian, two u3 to a byte (stored in lsb order)
+u4 := 4 bit integer, little endian, two u4 to a byte
 u32 := 32 bit unsigned integer, little endian
 u64 := 64 bit unsigned integer, little endian
 lebu32 := lebu128, maximum of u32::MAX
@@ -24,16 +24,17 @@ four-logic := u2 ∈ {
     3 (high impedance),
 }
 
-// up to 2 eight-logic values to a byte
-eight-logic := u3 ∈ {
-    0b100 (zero, strong drive),
-    0b101 (one, strong drive),
-    0b000 (zero, weak drive),
-    0b001 (one, weak drive),
-    0b110 (unknown, strong drive),
-    0b010 (unknown, weak drive),
-    0b110 (zero, unknown drive),
-    0b111 (one, unknown drive),
+// up to two nine-logic values to a byte
+nine-logic := u4 ∈ {
+    0 (zero, strong drive),
+    1 (one, strong drive),
+    2 (zero, weak drive),
+    3 (one, weak drive),
+    4 (unknown, strong drive),
+    5 (unknown, weak drive),
+    6 (zero, unknown drive),
+    7 (one, unknown drive),
+    8 (high impedance),
 }
 
 unsized-vec(T) := sequence of T
@@ -52,10 +53,10 @@ string := vec(utf-8 encoded byte)
 
 storage :=
     id := u32
-    type := u32 ∈ { TWO_LOGIC := 0, FOUR_LOGIC := 1, EIGHT_LOGIC := 2 }
-    length := u32
-    //
-    lsb := u32
+    type := u32 ∈ { TWO_LOGIC := 0, FOUR_LOGIC := 1, NINE_LOGIC := 2 }
+    width := u32
+    // the index at which the storage starts, e.g. wire[31:7] starts at 7
+    start := u32
 
 enum-specification :=
     name := string
@@ -75,7 +76,7 @@ variable :=
             storage-ids := vec(u32),
             msb := u32 // most significant bit index
             lsb := u32 // least significant bit index
-            signedness := u32 ∈ { SIGNED_TWOS_COMPLEMENT := 0, UNSIGNED_TWOS_COMPLEMENT := 1 }
+            signedness := u32 ∈ { SIGNED_TWOS_COMPLEMENT := 0, UNSIGNED := 1 }
         }
     }
 
@@ -91,7 +92,7 @@ value-change :=
     match storages[storage-id].type {
         TWO_LOGIC => unsized-vec(two-logic),
         FOUR_LOGIC => unsized-vec(four-logic),
-        EIGHT_LOGIC => unsized-vec(eight-logic),
+        NINE_LOGIC => unsized-vec(nine-logic),
     }
 
 block :=
