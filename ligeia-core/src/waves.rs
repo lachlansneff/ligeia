@@ -6,7 +6,7 @@ mod change;
 mod scope;
 
 pub use self::change::{ChangeBlockList, ChangeHeader, ChangeOffset, StorageIter};
-pub use self::scope::{Scope, Scopes, ScopesError, TOP_SCOPE};
+pub use self::scope::{Scope, Scopes, ScopesError, ROOT_SCOPE};
 
 #[derive(Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct StorageId(pub u32);
@@ -68,7 +68,7 @@ pub struct Progress {
     pub so_far: usize,
 }
 
-pub trait WavesLoader<A: Allocator + Clone> {
+pub trait WavesLoader<A: Allocator> {
     fn supports_file_extension(&self, s: &str) -> bool;
     fn description(&self) -> String;
 

@@ -1,7 +1,7 @@
 use crate::waves::{ScopeId, Variable};
 use std::collections::BTreeMap;
 
-pub const TOP_SCOPE: ScopeId = ScopeId(0);
+pub const ROOT_SCOPE: ScopeId = ScopeId(0);
 
 #[derive(Debug, Clone)]
 pub enum ScopesError {
@@ -44,7 +44,7 @@ impl Scopes {
             return Err(ScopesError::InvalidParent);
         }
 
-        if parent == TOP_SCOPE {
+        if parent == ROOT_SCOPE {
             self.tops.push(id);
         } else {
             let scope = self
