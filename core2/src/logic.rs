@@ -3,7 +3,7 @@ use std::{convert::TryFrom, marker::PhantomData, mem, ops::Deref, ptr::{self, No
 use crate::waves::ChangeHeader;
 
 
-pub unsafe trait Logic {
+pub unsafe trait Logic: Copy + Default + 'static {
     /// Number of units per byte.
     const PER_BYTE: usize;
     const FORMAT_PREFIX: &'static str;
@@ -13,11 +13,10 @@ pub unsafe trait Logic {
 }
 
 pub trait Combine<L: Logic> {
-    fn combine(lhs: LogicSliceMut<L>, rhs: LogicSlice<L>);
+    fn combine(lhs: (ChangeHeader, LogicSliceMut<L>), rhs: (ChangeHeader, LogicSlice<L>));
 }
 
 struct LogicSliceInner<L: Logic> {
-    header: ChangeHeader,
     ptr: NonNull<u8>,
     width: usize,
     _marker: PhantomData<L>,
@@ -40,10 +39,9 @@ pub struct LogicArray<L: Logic> {
 }
 
 impl<'a, L: Logic> LogicSlice<'a, L> {
-    pub(crate) fn new(header: ChangeHeader, width: usize, ptr: NonNull<u8>) -> Self {
+    pub(crate) unsafe fn new(width: usize, ptr: NonNull<u8>) -> Self {
         Self {
             inner: LogicSliceInner {
-                header,
                 ptr,
                 width,
                 _marker: PhantomData,
@@ -70,10 +68,9 @@ impl<'a, L: Logic> LogicSlice<'a, L> {
 }
 
 impl<'a, L: Logic> LogicSliceMut<'a, L> {
-    pub(crate) fn new(header: ChangeHeader, width: usize, ptr: NonNull<u8>) -> Self {
+    pub(crate) unsafe fn new(width: usize, ptr: NonNull<u8>) -> Self {
         Self {
             inner: LogicSliceInner {
-                header,
                 ptr,
                 width,
                 _marker: PhantomData,
@@ -102,14 +99,18 @@ impl<'a, L: Logic> Deref for LogicSliceMut<'a, L> {
 }
 
 impl<L: Logic> LogicArray<L> {
-    pub fn new(header: ChangeHeader, width: usize) -> Self {
+    pub fn new(width: usize, fill: L) -> Self {
         let bytes = (width + L::PER_BYTE - 1) / L::PER_BYTE;
         let slice = Box::leak(vec![0u8; bytes].into_boxed_slice());
+        for i in 0..width {
+            unsafe {
+                L::set_unit(slice.as_mut_ptr(), i, fill);
+            }
+        }
         let ptr = unsafe { NonNull::new_unchecked(slice.as_mut_ptr()) };
 
         Self {
             inner: LogicSliceInner {
-                header,
                 ptr,
                 width,
                 _marker: PhantomData,
@@ -176,12 +177,12 @@ impl<L: Logic> Iterator for LogicIter<'_, L> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum TwoLogic {
+pub enum Two {
     Zero = 0,
     One = 1,
 }
 
-unsafe impl Logic for TwoLogic {
+unsafe impl Logic for Two {
     const PER_BYTE: usize = 8;
 
     const FORMAT_PREFIX: &'static str = "0b";
@@ -190,7 +191,7 @@ unsafe impl Logic for TwoLogic {
         let offset_bytes = offset / Self::PER_BYTE;
         let offset_bits = offset % Self::PER_BYTE;
         unsafe {
-            mem::transmute(b.add(offset_bytes).read() & (1 << offset_bits) >> offset_bits)
+            mem::transmute((b.add(offset_bytes).read() >> offset_bits) & 1)
         }
     }
 
@@ -204,31 +205,37 @@ unsafe impl Logic for TwoLogic {
     }
 }
 
+impl Default for Two {
+    fn default() -> Self {
+        Self::Zero
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum FourLogic {
+pub enum Four {
     Zero = 0,
     One = 1,
     Unknown = 2,
     HighImpedance = 3,
 }
 
-unsafe impl Logic for FourLogic {
+unsafe impl Logic for Four {
     const PER_BYTE: usize = 4;
 
     const FORMAT_PREFIX: &'static str = "0q";
 
     unsafe fn get_unit(b: *const u8, offset: usize) -> Self {
         let offset_byte = offset / Self::PER_BYTE;
-        let offset_bits = offset % Self::PER_BYTE;
+        let offset_bits = (offset % Self::PER_BYTE) * 2;
         unsafe {
-            mem::transmute(b.add(offset_byte).read() & (0b11 << offset_bits) >> offset_bits)
+            mem::transmute((b.add(offset_byte).read() >> offset_bits) & 0b11)
         }
     }
 
     unsafe fn set_unit(b: *mut u8, offset: usize, u: Self) {
         let offset_byte = offset / Self::PER_BYTE;
-        let offset_bits = offset % Self::PER_BYTE;
+        let offset_bits = (offset % Self::PER_BYTE) * 2;
         unsafe {
             let c = b.add(offset_byte);
             c.write((c.read() & !(0b11 << offset_bits)) | ((u as u8) << offset_bits));
@@ -236,15 +243,21 @@ unsafe impl Logic for FourLogic {
     }
 }
 
+impl Default for Four {
+    fn default() -> Self {
+        Self::Zero
+    }
+}
+
 pub struct LogicConversionFailed;
 
-impl TryFrom<FourLogic> for TwoLogic {
+impl TryFrom<Four> for Two {
     type Error = LogicConversionFailed;
 
-    fn try_from(value: FourLogic) -> Result<Self, Self::Error> {
+    fn try_from(value: Four) -> Result<Self, Self::Error> {
         match value {
-            FourLogic::Zero => Ok(TwoLogic::Zero),
-            FourLogic::One => Ok(TwoLogic::One),
+            Four::Zero => Ok(Two::Zero),
+            Four::One => Ok(Two::One),
             _ => Err(LogicConversionFailed)
         }
     }
@@ -252,7 +265,7 @@ impl TryFrom<FourLogic> for TwoLogic {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum NineLogic {
+pub enum Nine {
     ZeroStrong = 0,
     OneStrong = 1,
     ZeroWeak = 2,
@@ -264,21 +277,21 @@ pub enum NineLogic {
     HighImpedance = 8,
 }
 
-unsafe impl Logic for NineLogic {
+unsafe impl Logic for Nine {
     const PER_BYTE: usize = 2;
     const FORMAT_PREFIX: &'static str = "0n";
 
     unsafe fn get_unit(b: *const u8, offset: usize) -> Self {
         let offset_bytes = offset / Self::PER_BYTE;
-        let offset_bits = offset % Self::PER_BYTE;
+        let offset_bits = (offset % Self::PER_BYTE) * 4;
         unsafe {
-            mem::transmute((b.add(offset_bytes).read() & (0b1111 << offset_bits) >> offset_bits).clamp(0, Self::HighImpedance as u8))
+            mem::transmute((b.add(offset_bytes).read() >> offset_bits) & 0b1111)
         }
     }
 
     unsafe fn set_unit(b: *mut u8, offset: usize, u: Self) {
         let offset_bytes = offset / Self::PER_BYTE;
-        let offset_bits = offset % Self::PER_BYTE;
+        let offset_bits = (offset % Self::PER_BYTE) * 4;
         unsafe {
             let c = b.add(offset_bytes);
             c.write((c.read() & !(0b1111 << offset_bits)) | ((u as u8) << offset_bits));
@@ -286,13 +299,19 @@ unsafe impl Logic for NineLogic {
     }
 }
 
-impl TryFrom<NineLogic> for TwoLogic {
+impl Default for Nine {
+    fn default() -> Self {
+        Self::UnknownWeak
+    }
+}
+
+impl TryFrom<Nine> for Two {
     type Error = LogicConversionFailed;
 
-    fn try_from(value: NineLogic) -> Result<Self, Self::Error> {
+    fn try_from(value: Nine) -> Result<Self, Self::Error> {
         match value {
-            NineLogic::ZeroStrong | NineLogic::ZeroWeak => Ok(TwoLogic::Zero),
-            NineLogic::OneStrong | NineLogic::OneWeak => Ok(TwoLogic::One),
+            Nine::ZeroStrong | Nine::ZeroWeak => Ok(Two::Zero),
+            Nine::OneStrong | Nine::OneWeak => Ok(Two::One),
             _ => Err(LogicConversionFailed)
         }
     }
@@ -304,24 +323,50 @@ mod tests {
 
     #[test]
     fn logic_array_set_get() {
-        let mut array = LogicArray::<NineLogic>::new(ChangeHeader {
+        let mut array = LogicArray::<Nine>::new(ChangeHeader {
             ts: 0,
-        }, 1);
+        }, 1, Nine::HighImpedance);
 
-        array.set(0, NineLogic::UnknownStrong);
+        array.set(0, Nine::UnknownStrong);
 
-        assert_eq!(array.get(0), NineLogic::UnknownStrong);
+        assert_eq!(array.get(0), Nine::UnknownStrong);
     }
 
     #[test]
     fn logic_array_set_iter() {
-        let mut array = LogicArray::<NineLogic>::new(ChangeHeader {
+        let mut array = LogicArray::<Two>::new(ChangeHeader {
             ts: 0,
-        }, 1);
-        array.set(0, NineLogic::OneWeak);
-        
+        }, 3, Two::Zero);
+        array.set(0, Two::One);
+
         let mut iter = array.iter();
-        assert_eq!(iter.next(), Some(NineLogic::OneWeak));
+        println!("{:#08b}", unsafe { *iter.ptr });
+        assert_eq!(iter.next(), Some(Two::One));
+        assert_eq!(iter.next(), Some(Two::Zero));
+        assert_eq!(iter.next(), Some(Two::Zero));
+        assert_eq!(iter.next(), None);
+
+        let mut array = LogicArray::<Four>::new(ChangeHeader {
+            ts: 0,
+        }, 3, Four::HighImpedance);
+        array.set(0, Four::One);
+
+        let mut iter = array.iter();
+        println!("{:#08b}", unsafe { *iter.ptr });
+        assert_eq!(iter.next(), Some(Four::One));
+        assert_eq!(iter.next(), Some(Four::HighImpedance));
+        assert_eq!(iter.next(), Some(Four::HighImpedance));
+        assert_eq!(iter.next(), None);
+
+        let mut array = LogicArray::<Nine>::new(ChangeHeader {
+            ts: 0,
+        }, 3, Nine::UnknownWeak);
+        array.set(0, Nine::OneWeak);
+
+        let mut iter = array.iter();
+        assert_eq!(iter.next(), Some(Nine::OneWeak));
+        assert_eq!(iter.next(), Some(Nine::UnknownWeak));
+        assert_eq!(iter.next(), Some(Nine::UnknownWeak));
         assert_eq!(iter.next(), None);
     }
 }

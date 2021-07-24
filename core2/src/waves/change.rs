@@ -1,33 +1,27 @@
-use std::{alloc::Allocator, convert::TryInto, marker::PhantomData, mem, num::NonZeroUsize, slice};
+use std::{alloc::Allocator, convert::TryInto, marker::PhantomData, mem, num::NonZeroUsize, ptr::NonNull, slice};
+
+use crate::logic::{Logic, LogicSlice, LogicSliceMut};
 
 pub const CHANGES_PER_BLOCK: usize = 16;
 
 fn size_of_changes(bytes_per_change: usize) -> usize {
-    (8 + bytes_per_change) * CHANGES_PER_BLOCK
+    (mem::size_of::<ChangeHeader>() + bytes_per_change) * CHANGES_PER_BLOCK
 }
 
 fn block_offset_to_change_offset(block_header_offset: usize, bytes_per_change: usize, index: usize) -> usize {
-    block_header_offset + mem::size_of::<ChangeBlockHeader>() + ((8 + bytes_per_change) * index)
+    block_header_offset + mem::size_of::<ChangeBlockHeader>() + ((mem::size_of::<ChangeHeader>() + bytes_per_change) * index)
 }
 
+#[derive(Copy, Clone, bytemuck::Pod)]
+#[repr(C)]
 pub struct ChangeHeader {
     pub ts: u64, // timestamp of timesteps
 }
 
-impl From<[u8; 8]> for ChangeHeader {
-    fn from(b: [u8; 8]) -> Self {
-        Self {
-            ts: u64::from_le_bytes(b),
-        }
-    }
-}
+unsafe impl bytemuck::Zeroable for ChangeHeader {}
 
-impl From<ChangeHeader> for [u8; 8] {
-    fn from(h: ChangeHeader) -> Self {
-        h.ts.to_le_bytes()
-    }
-}
-
+#[derive(Copy, Clone, bytemuck::Pod)]
+#[repr(C)]
 pub struct ChangeBlockHeader {
     /// The byte offset from this changeblock to the previous one.
     pub delta_previous: Option<NonZeroUsize>,
@@ -41,23 +35,7 @@ impl ChangeBlockHeader {
     }
 }
 
-impl From<[u8; mem::size_of::<ChangeBlockHeader>()]> for ChangeBlockHeader {
-    fn from(b: [u8; mem::size_of::<ChangeBlockHeader>()]) -> Self {
-        Self {
-            delta_previous: NonZeroUsize::new(usize::from_le_bytes(b[..mem::size_of::<usize>()].try_into().unwrap())),
-            len: usize::from_le_bytes(b[mem::size_of::<usize>()..].try_into().unwrap())
-        }
-    }
-}
-
-impl From<ChangeBlockHeader> for [u8; mem::size_of::<ChangeBlockHeader>()] {
-    fn from(h: ChangeBlockHeader) -> Self {
-        let mut b = [0; mem::size_of::<ChangeBlockHeader>()];
-        b[..mem::size_of::<usize>()].copy_from_slice(&h.delta_previous.map_or(0, |n| n.get()).to_le_bytes());
-        b[mem::size_of::<usize>()..].copy_from_slice(&h.len.to_le_bytes());
-        b
-    }
-}
+unsafe impl bytemuck::Zeroable for ChangeBlockHeader {}
 
 struct StorageInfo {
     last_offset: NonZeroUsize,
@@ -65,6 +43,9 @@ struct StorageInfo {
     bytes_per_change: usize,
     count: usize,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct ChangeOffset(NonZeroUsize);
 
 pub struct ChangeBlockList<A: Allocator> {
     data: Vec<u8, A>,
@@ -87,12 +68,12 @@ impl<A: Allocator> ChangeBlockList<A> {
 
         let current_offset = self.data.len();
 
-        let header: [u8; mem::size_of::<ChangeBlockHeader>()] = ChangeBlockHeader {
+        let header = ChangeBlockHeader {
             delta_previous: None,
             len: 0,
-        }.into();
+        };
 
-        self.data.extend_from_slice(&header);
+        self.data.extend_from_slice(bytemuck::bytes_of(&header));
         self.data.resize(self.data.len() + size_of_changes(bytes_per_change), 0);
 
         self.storage_infos[storage_id as usize] = Some(StorageInfo {
@@ -104,9 +85,8 @@ impl<A: Allocator> ChangeBlockList<A> {
 
     pub unsafe fn push_change(&mut self, storage_id: u32, data: *const u8) {
         let info = self.storage_infos[storage_id as usize].as_mut().unwrap();
-        let block_header: ChangeBlockHeader = unsafe {
-            (&self.data[info.last_offset.get()] as *const u8 as *const [u8; mem::size_of::<ChangeBlockHeader>()]).read().into()
-        };
+
+        let block_header: ChangeBlockHeader = *bytemuck::from_bytes(&self.data[info.last_offset.get()..info.last_offset.get() + mem::size_of::<ChangeBlockHeader>()]);
 
         info.count += 1;
 
@@ -115,24 +95,18 @@ impl<A: Allocator> ChangeBlockList<A> {
             self.data[change_offset..change_offset + info.bytes_per_change].copy_from_slice(unsafe {
                 slice::from_raw_parts(data, info.bytes_per_change)
             });
+            let block_header: &mut ChangeBlockHeader = bytemuck::from_bytes_mut(&mut self.data[info.last_offset.get()..info.last_offset.get() + mem::size_of::<ChangeBlockHeader>()]);
             
-            let block_header: [u8; mem::size_of::<ChangeBlockHeader>()] = ChangeBlockHeader {
-                len: block_header.len + 1,
-                ..block_header
-            }.into();
-
-            unsafe {
-                (&mut self.data[info.last_offset.get()] as *mut u8 as *mut [u8; mem::size_of::<ChangeBlockHeader>()]).write(block_header);
-            }
+            block_header.len += 1;
         } else {
             let new_offset = self.data.len();
 
-            let header: [u8; mem::size_of::<ChangeBlockHeader>()] = ChangeBlockHeader {
+            let header = ChangeBlockHeader {
                 delta_previous: Some(unsafe { NonZeroUsize::new_unchecked(new_offset - info.last_offset.get()) }),
                 len: 0,
-            }.into();
+            };
             
-            self.data.extend_from_slice(&header);
+            self.data.extend_from_slice(bytemuck::bytes_of(&header));
             self.data.resize(self.data.len() + size_of_changes(info.bytes_per_change), 0);
 
             info.last_offset = unsafe { NonZeroUsize::new_unchecked(new_offset) };
@@ -146,9 +120,7 @@ impl<A: Allocator> ChangeBlockList<A> {
     pub fn iter_storage(&self, storage_id: u32) -> StorageIter {
         let info = self.storage_infos[storage_id as usize].as_ref().expect("storage not added yet");
 
-        let block_header: ChangeBlockHeader = unsafe {
-            (&self.data[info.last_offset.get()] as *const u8 as *const [u8; mem::size_of::<ChangeBlockHeader>()]).read().into()
-        };
+        let block_header: &ChangeBlockHeader = bytemuck::from_bytes(&self.data[info.last_offset.get()..info.last_offset.get() + mem::size_of::<ChangeBlockHeader>()]);
 
         StorageIter {
             start_ptr: self.data.as_ptr(),
@@ -161,16 +133,62 @@ impl<A: Allocator> ChangeBlockList<A> {
     }
 
     /// This isn't "unsafe" exactly, but if you put in a wrong offset, you'll get garbage out.
-    pub fn get_change(&self, offset: ChangeOffset) -> (ChangeHeader, *const u8) {
-        let offset = offset.0;
-        let b: [u8; 8] = self.data[offset..offset + 8].try_into().unwrap();
-        let header = b.into();
+    pub unsafe fn get_change<L: Logic>(&self, offset: ChangeOffset, width: usize) -> (ChangeHeader, LogicSlice<L>) {
+        let offset = offset.0.get();
+        let header = *bytemuck::from_bytes(&self.data[offset..offset + mem::size_of::<ChangeHeader>()]);
+        let ptr = NonNull::from(&self.data[offset + mem::size_of::<ChangeHeader>()]);
 
-        (header, &self.data[offset + 8])
+        (
+            header,
+            unsafe {
+                LogicSlice::new(width, ptr)
+            },
+        )
+    }
+
+    /// This isn't "unsafe" exactly, but if you put in a wrong offset, you'll get garbage out.
+    pub unsafe fn get_change_mut<L: Logic>(&mut self, offset: ChangeOffset, width: usize) -> (ChangeHeader, LogicSliceMut<L>) {
+        let offset = offset.0.get();
+        let header = *bytemuck::from_bytes(&self.data[offset..offset + mem::size_of::<ChangeHeader>()]);
+        let ptr =  NonNull::from(&mut self.data[offset + mem::size_of::<ChangeHeader>()]);
+
+        (
+            header,
+            unsafe {
+                LogicSliceMut::new(width, ptr)
+            },
+        )
+    }
+
+    pub unsafe fn get_two_changes<L: Logic>(&mut self, lhs: ChangeOffset, rhs: ChangeOffset, width: usize) -> ((ChangeHeader, LogicSliceMut<L>), (ChangeHeader, LogicSlice<L>)) {
+        let (h1, ptr1) = {
+            let offset = lhs.0.get();
+            let header = *bytemuck::from_bytes(&self.data[offset..offset + mem::size_of::<ChangeHeader>()]);
+            let ptr = NonNull::from(&mut self.data[offset + mem::size_of::<ChangeHeader>()]);
+            (header, ptr)
+        };
+
+        let (h2, ptr2) = {
+            let offset = rhs.0.get();
+            let header = *bytemuck::from_bytes(&self.data[offset..offset + mem::size_of::<ChangeHeader>()]);
+            let ptr = NonNull::from(&self.data[offset + mem::size_of::<ChangeHeader>()]);
+            (header, ptr)
+        };
+
+        unsafe {
+            (
+                (
+                    h1,
+                    LogicSliceMut::new(width, ptr1),
+                ),
+                (
+                    h2,
+                    LogicSlice::new(width, ptr2),
+                ),
+            )
+        }
     }
 }
-
-pub struct ChangeOffset(usize);
 
 pub struct StorageIter<'a> {
     start_ptr: *const u8,
@@ -188,10 +206,10 @@ impl<'a> Iterator for StorageIter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         if self.remaining_in_block == 0 {
             unsafe {
-                let header: ChangeBlockHeader = (self.block_pointer as *const [u8; mem::size_of::<ChangeBlockHeader>()]).read().into();
+                let header: &ChangeBlockHeader = bytemuck::from_bytes(&*(self.block_pointer as *const [u8; mem::size_of::<ChangeBlockHeader>()]));
                 if let Some(delta) = header.delta_previous {
                     self.block_pointer = self.block_pointer.sub(delta.get());
-                    let header: ChangeBlockHeader = (self.block_pointer as *const [u8; mem::size_of::<ChangeBlockHeader>()]).read().into();
+                    let header: &ChangeBlockHeader = bytemuck::from_bytes(&*(self.block_pointer as *const [u8; mem::size_of::<ChangeBlockHeader>()]));
                     self.remaining_in_block = header.len;
                 } else {
                     return None;
@@ -201,7 +219,7 @@ impl<'a> Iterator for StorageIter<'a> {
 
         let change_offset = block_offset_to_change_offset(0, self.bytes_per_change, CHANGES_PER_BLOCK - self.remaining_in_block);
         unsafe {
-            let header_offset = self.block_pointer.add(change_offset).offset_from(self.start_ptr) as usize;
+            let header_offset = NonZeroUsize::new(self.block_pointer.add(change_offset).offset_from(self.start_ptr) as usize).unwrap();
             Some(ChangeOffset(header_offset))
         }
     }

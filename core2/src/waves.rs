@@ -1,5 +1,5 @@
 use std::{alloc::Allocator, fs::File, io::Read};
-use crate::unit::TwoLogic;
+use crate::logic::{self, LogicArray};
 
 mod change;
 
@@ -21,7 +21,7 @@ pub struct Storage {
 
 pub struct EnumSpec {
     pub name: String,
-    pub value: Vec<TwoLogic>,
+    pub value: LogicArray<logic::Two>,
 }
 
 #[derive(Clone, Copy)]
