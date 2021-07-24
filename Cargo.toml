@@ -7,7 +7,6 @@ edition = "2018"
 [workspace]
 members = [
     "ligeia-core",
-    "core2",
     "ligeia-vcd",
     "ligeia-svcb",
 ]

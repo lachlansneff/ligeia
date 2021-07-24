@@ -1,22 +1,9 @@
-#![feature(
-    allocator_api,
-    alloc_layout_extra,
-    slice_ptr_len,
-    slice_ptr_get,
-    slice_range,
-    maybe_uninit_ref
-)]
+#![feature(allocator_api)]
+#![warn(unsafe_op_in_unsafe_fn)]
 
-mod lazy;
-#[cfg(feature = "mmap-alloc")]
-pub mod mmap_alloc;
-mod progress;
-mod unsized_types;
-pub mod waveform;
+mod implicit_forest;
+pub mod logic;
+pub mod waves;
 
-pub use progress::Progress;
-pub use unsized_types::{
-    Bit, BitSlice, KnownUnsizedVec, KnownUnsizedVecIter, KnownUnsizedVecIterMut, Qit,
-    ValueChangeNode,
-};
-// pub use waveform::{Forest, Waveform, WaveformLoader, NodeTree, TreeOrLayer, Tree, LoadError, Scope, VariableId, VariableInfo, Variable};
+pub use self::implicit_forest::ImplicitForest;
+pub use self::waves::{Waves, WavesLoader};
