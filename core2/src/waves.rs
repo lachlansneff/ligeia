@@ -1,9 +1,18 @@
-use std::{alloc::Allocator, fs::File, io::Read};
 use crate::logic::{self, LogicArray};
+use std::collections::BTreeMap;
+use std::{alloc::Allocator, fs::File, io::Read};
 
 mod change;
+mod scope;
 
-pub use self::change::{ChangeBlockList, StorageIter, ChangeOffset, ChangeHeader};
+pub use self::change::{ChangeBlockList, ChangeHeader, ChangeOffset, StorageIter};
+pub use self::scope::{Scope, Scopes, ScopesError, TOP_SCOPE};
+
+#[derive(Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct StorageId(pub u32);
+
+#[derive(Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ScopeId(pub u32);
 
 #[derive(Clone, Copy)]
 pub enum StorageType {
@@ -13,7 +22,6 @@ pub enum StorageType {
 }
 
 pub struct Storage {
-    pub id: u32,
     pub ty: StorageType,
     pub width: u32,
     pub start: u32,
@@ -33,30 +41,23 @@ pub enum Signedness {
 pub enum VariableInterp {
     None,
     Integer {
-        storage_ids: Vec<u32>,
+        storages: Vec<StorageId>,
         msb_index: u32,
         lsb_index: u32,
         signedness: Signedness,
     },
     Enum {
-        storage_id: u32,
+        storage: StorageId,
         specs: Vec<EnumSpec>,
     },
     Utf8 {
-        storage_id: u32,
+        storage: StorageId,
     },
 }
 
 pub struct Variable {
-    pub scope_id: u32,
     pub name: String,
     pub interp: VariableInterp,
-}
-
-pub struct Scope {
-    pub parent_scope_id: u32,
-    pub this_scope_id: u32,
-    pub name: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -89,8 +90,7 @@ pub trait WavesLoader<A: Allocator + Clone> {
 }
 
 pub struct Waves<A: Allocator> {
-    /// The first index is the top-level parent scope and is always present.
-    pub scopes: Vec<Scope>,
-    pub variables: Vec<Variable>,
+    pub scopes: Scopes,
+    pub storages: BTreeMap<StorageId, Storage>,
     pub changes: ChangeBlockList<A>,
 }

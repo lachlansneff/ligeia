@@ -1,12 +1,15 @@
 use std::{alloc::Allocator, marker::PhantomData, ops::Range};
 
-use crate::{logic::{Combine, Logic, LogicArray}, waves::{ChangeBlockList, ChangeHeader, ChangeOffset}};
+use crate::{
+    logic::{Combine, Logic, LogicArray},
+    waves::{ChangeBlockList, ChangeHeader, ChangeOffset},
+};
 
 /// Loosely based on https://github.com/trishume/gigatrace.
 pub struct ImplicitForest<L: Logic, C: Combine<L>, A: Allocator> {
     vals: Vec<ChangeOffset, A>,
     width: usize,
-    _marker: PhantomData<(L, C)>
+    _marker: PhantomData<(L, C)>,
 }
 
 impl<L: Logic, C: Combine<L>, A: Allocator> ImplicitForest<L, C, A> {
@@ -18,7 +21,11 @@ impl<L: Logic, C: Combine<L>, A: Allocator> ImplicitForest<L, C, A> {
         }
     }
 
-    pub fn push(&mut self, change_blocks: &mut ChangeBlockList<impl Allocator>, offset: ChangeOffset) {
+    pub fn push(
+        &mut self,
+        change_blocks: &mut ChangeBlockList<impl Allocator>,
+        offset: ChangeOffset,
+    ) {
         self.vals.push(offset);
 
         let len = self.vals.len();
@@ -29,7 +36,11 @@ impl<L: Logic, C: Combine<L>, A: Allocator> ImplicitForest<L, C, A> {
             let prev_higher_level = current - (1 << level);
 
             let (lhs, rhs) = unsafe {
-                change_blocks.get_two_changes(self.vals[prev_higher_level], self.vals[current], self.width)
+                change_blocks.get_two_changes(
+                    self.vals[prev_higher_level],
+                    self.vals[current],
+                    self.width,
+                )
             };
 
             C::combine(lhs, rhs);
@@ -40,7 +51,11 @@ impl<L: Logic, C: Combine<L>, A: Allocator> ImplicitForest<L, C, A> {
         self.vals.push(self.vals[len - (1 << levels_to_index)]);
     }
 
-    pub fn range_query(&self, change_blocks: &ChangeBlockList<impl Allocator>, r: Range<usize>) -> (ChangeHeader, LogicArray<L>) {
+    pub fn range_query(
+        &self,
+        change_blocks: &ChangeBlockList<impl Allocator>,
+        r: Range<usize>,
+    ) -> (ChangeHeader, LogicArray<L>) {
         fn lsp(x: usize) -> usize {
             x & x.wrapping_neg()
         }
@@ -56,7 +71,12 @@ impl<L: Logic, C: Combine<L>, A: Allocator> ImplicitForest<L, C, A> {
 
         let mut ri = (r.start * 2)..(r.end * 2);
         let len = self.vals.len();
-        assert!(ri.start <= len && ri.end <= len, "range {:?} not inside 0..{}", r, len / 2);
+        assert!(
+            ri.start <= len && ri.end <= len,
+            "range {:?} not inside 0..{}",
+            r,
+            len / 2
+        );
 
         let mut combined = LogicArray::new(self.width, L::default());
         let mut combined_header = None;
@@ -69,7 +89,10 @@ impl<L: Logic, C: Combine<L>, A: Allocator> ImplicitForest<L, C, A> {
             };
 
             C::combine(
-                (*combined_header.get_or_insert(rhs_header), combined.as_slice_mut()),
+                (
+                    *combined_header.get_or_insert(rhs_header),
+                    combined.as_slice_mut(),
+                ),
                 (rhs_header, rhs_slice),
             );
             ri.start += skip;

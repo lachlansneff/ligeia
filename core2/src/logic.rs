@@ -1,7 +1,12 @@
-use std::{convert::TryFrom, marker::PhantomData, mem, ops::Deref, ptr::{self, NonNull}};
+use std::{
+    convert::TryFrom,
+    marker::PhantomData,
+    mem,
+    ops::Deref,
+    ptr::{self, NonNull},
+};
 
 use crate::waves::ChangeHeader;
-
 
 pub unsafe trait Logic: Copy + Default + 'static {
     /// Number of units per byte.
@@ -51,10 +56,11 @@ impl<'a, L: Logic> LogicSlice<'a, L> {
     }
 
     pub fn get(&self, offset: usize) -> L {
-        assert!(offset < self.inner.width, "attempted to get a logical unit out of bounds");
-        unsafe {
-            L::get_unit(self.inner.ptr.as_ptr(), offset)
-        }
+        assert!(
+            offset < self.inner.width,
+            "attempted to get a logical unit out of bounds"
+        );
+        unsafe { L::get_unit(self.inner.ptr.as_ptr(), offset) }
     }
 
     pub fn iter(&self) -> LogicIter<L> {
@@ -80,10 +86,11 @@ impl<'a, L: Logic> LogicSliceMut<'a, L> {
     }
 
     pub fn set(&mut self, offset: usize, logic: L) {
-        assert!(offset < self.inner.width, "attempted to set a logical unit out of bounds");
-        unsafe {
-            L::set_unit(self.inner.ptr.as_ptr(), offset, logic)
-        }
+        assert!(
+            offset < self.inner.width,
+            "attempted to set a logical unit out of bounds"
+        );
+        unsafe { L::set_unit(self.inner.ptr.as_ptr(), offset, logic) }
     }
 }
 
@@ -92,9 +99,7 @@ impl<'a, L: Logic> Deref for LogicSliceMut<'a, L> {
 
     fn deref(&self) -> &Self::Target {
         // SAFETY: `LogicSliceMut` and `LogicSlice` have exactly the same representation.
-        unsafe {
-            &*(self as *const Self as *const LogicSlice<'a, L>)
-        }
+        unsafe { &*(self as *const Self as *const LogicSlice<'a, L>) }
     }
 }
 
@@ -119,29 +124,27 @@ impl<L: Logic> LogicArray<L> {
     }
 
     pub fn get(&self, offset: usize) -> L {
-        assert!(offset < self.inner.width, "attempted to get a logical unit out of bounds");
-        unsafe {
-            L::get_unit(self.inner.ptr.as_ptr(), offset)
-        }
+        assert!(
+            offset < self.inner.width,
+            "attempted to get a logical unit out of bounds"
+        );
+        unsafe { L::get_unit(self.inner.ptr.as_ptr(), offset) }
     }
 
     pub fn set(&mut self, offset: usize, logic: L) {
-        assert!(offset < self.inner.width, "attempted to set a logical unit out of bounds");
-        unsafe {
-            L::set_unit(self.inner.ptr.as_ptr(), offset, logic)
-        }
+        assert!(
+            offset < self.inner.width,
+            "attempted to set a logical unit out of bounds"
+        );
+        unsafe { L::set_unit(self.inner.ptr.as_ptr(), offset, logic) }
     }
 
     pub fn as_slice(&self) -> LogicSlice<L> {
-        unsafe {
-            mem::transmute(ptr::read(&self.inner))
-        }
+        unsafe { mem::transmute(ptr::read(&self.inner)) }
     }
 
     pub fn as_slice_mut(&mut self) -> LogicSliceMut<L> {
-        unsafe {
-            mem::transmute(ptr::read(&self.inner))
-        }
+        unsafe { mem::transmute(ptr::read(&self.inner)) }
     }
 
     pub fn iter(&self) -> LogicIter<L> {
@@ -190,9 +193,7 @@ unsafe impl Logic for Two {
     unsafe fn get_unit(b: *const u8, offset: usize) -> Self {
         let offset_bytes = offset / Self::PER_BYTE;
         let offset_bits = offset % Self::PER_BYTE;
-        unsafe {
-            mem::transmute((b.add(offset_bytes).read() >> offset_bits) & 1)
-        }
+        unsafe { mem::transmute((b.add(offset_bytes).read() >> offset_bits) & 1) }
     }
 
     unsafe fn set_unit(b: *mut u8, offset: usize, u: Self) {
@@ -228,9 +229,7 @@ unsafe impl Logic for Four {
     unsafe fn get_unit(b: *const u8, offset: usize) -> Self {
         let offset_byte = offset / Self::PER_BYTE;
         let offset_bits = (offset % Self::PER_BYTE) * 2;
-        unsafe {
-            mem::transmute((b.add(offset_byte).read() >> offset_bits) & 0b11)
-        }
+        unsafe { mem::transmute((b.add(offset_byte).read() >> offset_bits) & 0b11) }
     }
 
     unsafe fn set_unit(b: *mut u8, offset: usize, u: Self) {
@@ -258,7 +257,7 @@ impl TryFrom<Four> for Two {
         match value {
             Four::Zero => Ok(Two::Zero),
             Four::One => Ok(Two::One),
-            _ => Err(LogicConversionFailed)
+            _ => Err(LogicConversionFailed),
         }
     }
 }
@@ -284,9 +283,7 @@ unsafe impl Logic for Nine {
     unsafe fn get_unit(b: *const u8, offset: usize) -> Self {
         let offset_bytes = offset / Self::PER_BYTE;
         let offset_bits = (offset % Self::PER_BYTE) * 4;
-        unsafe {
-            mem::transmute((b.add(offset_bytes).read() >> offset_bits) & 0b1111)
-        }
+        unsafe { mem::transmute((b.add(offset_bytes).read() >> offset_bits) & 0b1111) }
     }
 
     unsafe fn set_unit(b: *mut u8, offset: usize, u: Self) {
@@ -312,7 +309,7 @@ impl TryFrom<Nine> for Two {
         match value {
             Nine::ZeroStrong | Nine::ZeroWeak => Ok(Two::Zero),
             Nine::OneStrong | Nine::OneWeak => Ok(Two::One),
-            _ => Err(LogicConversionFailed)
+            _ => Err(LogicConversionFailed),
         }
     }
 }
@@ -323,9 +320,7 @@ mod tests {
 
     #[test]
     fn logic_array_set_get() {
-        let mut array = LogicArray::<Nine>::new(ChangeHeader {
-            ts: 0,
-        }, 1, Nine::HighImpedance);
+        let mut array = LogicArray::<Nine>::new(ChangeHeader { ts: 0 }, 1, Nine::HighImpedance);
 
         array.set(0, Nine::UnknownStrong);
 
@@ -334,9 +329,7 @@ mod tests {
 
     #[test]
     fn logic_array_set_iter() {
-        let mut array = LogicArray::<Two>::new(ChangeHeader {
-            ts: 0,
-        }, 3, Two::Zero);
+        let mut array = LogicArray::<Two>::new(ChangeHeader { ts: 0 }, 3, Two::Zero);
         array.set(0, Two::One);
 
         let mut iter = array.iter();
@@ -346,9 +339,7 @@ mod tests {
         assert_eq!(iter.next(), Some(Two::Zero));
         assert_eq!(iter.next(), None);
 
-        let mut array = LogicArray::<Four>::new(ChangeHeader {
-            ts: 0,
-        }, 3, Four::HighImpedance);
+        let mut array = LogicArray::<Four>::new(ChangeHeader { ts: 0 }, 3, Four::HighImpedance);
         array.set(0, Four::One);
 
         let mut iter = array.iter();
@@ -358,9 +349,7 @@ mod tests {
         assert_eq!(iter.next(), Some(Four::HighImpedance));
         assert_eq!(iter.next(), None);
 
-        let mut array = LogicArray::<Nine>::new(ChangeHeader {
-            ts: 0,
-        }, 3, Nine::UnknownWeak);
+        let mut array = LogicArray::<Nine>::new(ChangeHeader { ts: 0 }, 3, Nine::UnknownWeak);
         array.set(0, Nine::OneWeak);
 
         let mut iter = array.iter();
