@@ -1,5 +1,6 @@
 use crate::logic::{self, LogicArray};
 use std::collections::BTreeMap;
+use std::io;
 use std::{alloc::Allocator, fs::File, io::Read};
 
 mod change;
@@ -8,10 +9,10 @@ mod scope;
 pub use self::change::{ChangeBlockList, ChangeHeader, ChangeOffset, StorageIter};
 pub use self::scope::{Scope, Scopes, ScopesError, ROOT_SCOPE};
 
-#[derive(Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct StorageId(pub u32);
 
-#[derive(Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ScopeId(pub u32);
 
 #[derive(Clone, Copy)]
@@ -60,7 +61,7 @@ pub struct Variable {
     pub interp: VariableInterp,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Progress {
     /// Total bytes in the file/stream, if known.
     pub total: Option<usize>,
@@ -79,17 +80,19 @@ pub trait WavesLoader<A: Allocator> {
         alloc: A,
         progress: &mut dyn FnMut(Progress, &Waves<A>),
         file: File,
-    ) -> Result<Waves<A>, String>;
+    ) -> io::Result<Waves<A>>;
 
     fn load_stream(
         &self,
         alloc: A,
         progress: &mut dyn FnMut(Progress, &Waves<A>),
         reader: &mut dyn Read,
-    ) -> Result<Waves<A>, String>;
+    ) -> io::Result<Waves<A>>;
 }
 
 pub struct Waves<A: Allocator> {
+    /// Femtoseconds per timestep
+    pub timescale: u128,
     pub scopes: Scopes,
     pub storages: BTreeMap<StorageId, Storage>,
     pub changes: ChangeBlockList<A>,

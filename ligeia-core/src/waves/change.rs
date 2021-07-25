@@ -1,7 +1,6 @@
-use std::{
-    alloc::Allocator, convert::TryInto, marker::PhantomData, mem, num::NonZeroUsize, ptr::NonNull,
-    slice,
-};
+use std::{alloc::Allocator, mem, num::NonZeroUsize, ptr::NonNull, slice};
+#[cfg(debug_assertions)]
+use std::any::TypeId;
 
 use crate::{
     logic::{Logic, LogicSlice, LogicSliceMut},
@@ -9,16 +8,6 @@ use crate::{
 };
 
 pub const CHANGES_PER_BLOCK: usize = 16;
-
-fn block_offset_to_change_offset(
-    block_header_offset: usize,
-    bytes_per_change: usize,
-    index: usize,
-) -> usize {
-    block_header_offset
-        + mem::size_of::<ChangeBlockHeader>()
-        + ((mem::size_of::<ChangeHeader>() + bytes_per_change) * index)
-}
 
 #[derive(Copy, Clone, bytemuck::Pod)]
 #[repr(C)]
@@ -50,7 +39,11 @@ struct StorageInfo {
     last_offset: usize,
     /// TODO: Special case changes that are less than a byte in size to store more compactly?
     bytes_per_change: NonZeroUsize,
+    width: usize,
     count: usize,
+
+    #[cfg(debug_assertions)]
+    logic_type_id: TypeId,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -70,14 +63,15 @@ impl<A: Allocator> ChangeBlockList<A> {
         }
     }
 
-    pub fn add_storage(&mut self, storage_id: StorageId, bytes: NonZeroUsize) {
+    pub fn add_storage<L: Logic>(&mut self, storage_id: StorageId, width: usize) {
         if self.storage_infos.len() <= storage_id.0 as usize {
             self.storage_infos
                 .resize_with(storage_id.0 as usize + 1, || None);
         }
 
+        let bytes_per_change = NonZeroUsize::new(mem::size_of::<ChangeHeader>() + (width + L::PER_BYTE - 1) / L::PER_BYTE).unwrap();
+
         let current_offset = self.data.len();
-        let bytes_per_change = unsafe { NonZeroUsize::new_unchecked(mem::size_of::<ChangeBlockHeader>() * bytes.get()) };
 
         let header = ChangeBlockHeader {
             delta_next: None,
@@ -92,27 +86,29 @@ impl<A: Allocator> ChangeBlockList<A> {
             first_offset: current_offset,
             last_offset: current_offset,
             bytes_per_change,
+            width,
             count: 0,
+
+            #[cfg(debug_assertions)]
+            logic_type_id: TypeId::of::<L>(),
         });
     }
 
-    pub unsafe fn push_change(&mut self, storage_id: StorageId, data: *const u8) {
+    pub unsafe fn push_get<L: Logic>(&mut self, storage_id: StorageId, header: ChangeHeader) -> LogicSliceMut<L> {
         let info = self.storage_infos[storage_id.0 as usize].as_mut().unwrap();
+
+        #[cfg(debug_assertions)]
+        if info.logic_type_id != TypeId::of::<L>() {
+            panic!("The logical unit used to create this storage is not the same one used for `push_get`")
+        }
+
         info.count += 1;
         let current_offset = self.data.len();
 
         let (block_header_slice, rest) = self.data[info.last_offset..].split_at_mut(mem::size_of::<ChangeBlockHeader>());
         let block_header: &mut ChangeBlockHeader = bytemuck::from_bytes_mut(block_header_slice);
         
-        if !block_header.is_full() {
-            let change_offset = block_header.len * info.bytes_per_change.get();
-            let data_len = info.bytes_per_change.get() - mem::size_of::<ChangeBlockHeader>();
-
-            rest[change_offset..change_offset + data_len]
-                .copy_from_slice(unsafe { slice::from_raw_parts(data, data_len) });
-            
-            block_header.len += 1;
-        } else {
+        let (block_header, rest) = if block_header.is_full() {
             // At this point, there's at least one block already full.
             block_header.delta_next = Some(unsafe { NonZeroUsize::new_unchecked(current_offset - info.last_offset) });
             info.last_offset = current_offset;
@@ -128,7 +124,67 @@ impl<A: Allocator> ChangeBlockList<A> {
             self.data.extend_from_slice(bytemuck::bytes_of(&new_header));
             self.data
                 .resize(self.data.len() + info.bytes_per_change.get() * CHANGES_PER_BLOCK, 0);
+
+            let (block_header_slice, rest) = self.data[current_offset..].split_at_mut(mem::size_of::<ChangeBlockHeader>());
+            let block_header: &mut ChangeBlockHeader = bytemuck::from_bytes_mut(block_header_slice);
+            (block_header, rest)
+        } else {
+            (block_header, rest)
+        };
+
+        let change_offset = block_header.len * info.bytes_per_change.get();
+
+        let (header_slice, data_slice) = rest[change_offset..change_offset + info.bytes_per_change.get()].split_at_mut(mem::size_of::<ChangeHeader>());
+        header_slice.copy_from_slice(bytemuck::bytes_of(&header));
+
+        unsafe {
+            LogicSliceMut::new(
+                info.width,
+                NonNull::new_unchecked(data_slice.as_mut_ptr()),
+            )
         }
+    }
+
+    pub unsafe fn push_change(&mut self, storage_id: StorageId, header: ChangeHeader, data: *const u8) {
+        let info = self.storage_infos[storage_id.0 as usize].as_mut().unwrap();
+        info.count += 1;
+        let current_offset = self.data.len();
+
+        let (block_header_slice, rest) = self.data[info.last_offset..].split_at_mut(mem::size_of::<ChangeBlockHeader>());
+        let block_header: &mut ChangeBlockHeader = bytemuck::from_bytes_mut(block_header_slice);
+        
+        let (block_header, rest) = if block_header.is_full() {
+            // At this point, there's at least one block already full.
+            block_header.delta_next = Some(unsafe { NonZeroUsize::new_unchecked(current_offset - info.last_offset) });
+            info.last_offset = current_offset;
+
+            drop(block_header);
+            drop(rest);
+
+            let new_header = ChangeBlockHeader {
+                delta_next: None,
+                len: 0,
+            };
+
+            self.data.extend_from_slice(bytemuck::bytes_of(&new_header));
+            self.data
+                .resize(self.data.len() + info.bytes_per_change.get() * CHANGES_PER_BLOCK, 0);
+
+            let (block_header_slice, rest) = self.data[current_offset..].split_at_mut(mem::size_of::<ChangeBlockHeader>());
+            let block_header: &mut ChangeBlockHeader = bytemuck::from_bytes_mut(block_header_slice);
+            (block_header, rest)
+        } else {
+            (block_header, rest)
+        };
+
+        let change_offset = block_header.len * info.bytes_per_change.get();
+        let data_len = info.bytes_per_change.get() - mem::size_of::<ChangeHeader>();
+
+        let (header_slice, data_slice) = rest[change_offset..change_offset + info.bytes_per_change.get()].split_at_mut(mem::size_of::<ChangeHeader>());
+        header_slice.copy_from_slice(bytemuck::bytes_of(&header));
+        data_slice.copy_from_slice(unsafe { slice::from_raw_parts(data, data_len) });
+        
+        block_header.len += 1;
     }
 
     pub fn count_of(&self, storage_id: StorageId) -> usize {

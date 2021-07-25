@@ -1,17 +1,11 @@
-use std::{env, error, path::Path, fs::File};
+#![feature(allocator_api)]
 
-use ligeia_core::{self, mmap_alloc::MmappableAllocator, waveform::WaveformLoader, Progress};
+use std::{alloc::Global, env, error, fs::File, path::Path, time::Instant};
+
+use ligeia_core::{self, WavesLoader};
 use ligeia_vcd::VcdLoader;
 
-const LOADER: &dyn WaveformLoader<MmappableAllocator> = &VcdLoader::new();
-
-struct NullProgress;
-
-impl Progress for NullProgress {
-    fn start(&mut self, _total_len: Option<usize>) {}
-    fn finish(&mut self) {}
-    fn set(&mut self, _progress: usize) {}
-}
+const LOADER: &dyn WavesLoader<Global> = &VcdLoader;
 
 fn main() -> Result<(), Box<dyn error::Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
@@ -23,9 +17,15 @@ fn main() -> Result<(), Box<dyn error::Error>> {
     let path = Path::new(&args[0]);
     let f = File::open(path)?;
 
-    let _waveform = LOADER.load_file(MmappableAllocator::new(), &mut NullProgress, f)?;
+    let start = Instant::now();
 
-    println!("loaded vcd");
+    let _waves = LOADER.load_file(Global, &mut |progress, _| {
+        println!("{:#?}", progress);
+    }, f)?;
+
+    let elapsed = start.elapsed();
+
+    println!("loaded vcd in {:?}", elapsed);
 
     Ok(())
 }

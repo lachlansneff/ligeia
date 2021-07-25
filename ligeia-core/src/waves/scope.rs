@@ -1,5 +1,5 @@
 use crate::waves::{ScopeId, Variable};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, iter::FromIterator};
 
 pub const ROOT_SCOPE: ScopeId = ScopeId(0);
 
@@ -23,14 +23,16 @@ pub struct Scope<'a> {
 
 pub struct Scopes {
     scopes: BTreeMap<ScopeId, InnerScope>,
-    tops: Vec<ScopeId>,
 }
 
 impl Scopes {
     pub fn new() -> Self {
         Self {
-            scopes: BTreeMap::new(),
-            tops: vec![],
+            scopes: BTreeMap::from_iter([(ScopeId(0), InnerScope {
+                name: "".to_string(),
+                children: vec![],
+                variables: vec![],
+            })]),
         }
     }
 
@@ -44,15 +46,11 @@ impl Scopes {
             return Err(ScopesError::InvalidParent);
         }
 
-        if parent == ROOT_SCOPE {
-            self.tops.push(id);
-        } else {
-            let scope = self
-                .scopes
-                .get_mut(&parent)
-                .ok_or(ScopesError::InvalidParent)?;
-            scope.children.push(id);
-        }
+        let scope = self
+            .scopes
+            .get_mut(&parent)
+            .ok_or(ScopesError::InvalidParent)?;
+        scope.children.push(id);
 
         self.scopes.insert(
             id,
@@ -73,10 +71,6 @@ impl Scopes {
             .ok_or(ScopesError::InvalidParent)?;
         scope.variables.push(variable);
         Ok(())
-    }
-
-    pub fn top_level(&self) -> impl Iterator<Item = Scope<'_>> {
-        self.tops.iter().map(move |&id| self.get(id))
     }
 
     pub fn get(&self, id: ScopeId) -> Scope {

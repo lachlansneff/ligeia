@@ -13,6 +13,7 @@ pub unsafe trait Logic: Copy + Default + 'static {
     const PER_BYTE: usize;
     const FORMAT_PREFIX: &'static str;
 
+    /// `0` must be a valid logical unit.
     unsafe fn get_unit(b: *const u8, offset: usize) -> Self;
     unsafe fn set_unit(b: *mut u8, offset: usize, logic: Self);
 }
@@ -61,6 +62,10 @@ impl<'a, L: Logic> LogicSlice<'a, L> {
             "attempted to get a logical unit out of bounds"
         );
         unsafe { L::get_unit(self.inner.ptr.as_ptr(), offset) }
+    }
+
+    pub fn width(&self) -> usize {
+        self.inner.width
     }
 
     pub fn iter(&self) -> LogicIter<L> {
@@ -121,6 +126,10 @@ impl<L: Logic> LogicArray<L> {
                 _marker: PhantomData,
             },
         }
+    }
+
+    pub fn width(&self) -> usize {
+        self.inner.width
     }
 
     pub fn get(&self, offset: usize) -> L {
