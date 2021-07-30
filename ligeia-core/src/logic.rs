@@ -329,7 +329,7 @@ mod tests {
 
     #[test]
     fn logic_array_set_get() {
-        let mut array = LogicArray::<Nine>::new(ChangeHeader { ts: 0 }, 1, Nine::HighImpedance);
+        let mut array = LogicArray::<Nine>::new(1, Nine::HighImpedance);
 
         array.set(0, Nine::UnknownStrong);
 
@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn logic_array_set_iter() {
-        let mut array = LogicArray::<Two>::new(ChangeHeader { ts: 0 }, 3, Two::Zero);
+        let mut array = LogicArray::<Two>::new(3, Two::Zero);
         array.set(0, Two::One);
 
         let mut iter = array.iter();
@@ -348,7 +348,7 @@ mod tests {
         assert_eq!(iter.next(), Some(Two::Zero));
         assert_eq!(iter.next(), None);
 
-        let mut array = LogicArray::<Four>::new(ChangeHeader { ts: 0 }, 3, Four::HighImpedance);
+        let mut array = LogicArray::<Four>::new(3, Four::HighImpedance);
         array.set(0, Four::One);
 
         let mut iter = array.iter();
@@ -358,7 +358,7 @@ mod tests {
         assert_eq!(iter.next(), Some(Four::HighImpedance));
         assert_eq!(iter.next(), None);
 
-        let mut array = LogicArray::<Nine>::new(ChangeHeader { ts: 0 }, 3, Nine::UnknownWeak);
+        let mut array = LogicArray::<Nine>::new(3, Nine::UnknownWeak);
         array.set(0, Nine::OneWeak);
 
         let mut iter = array.iter();

@@ -15,11 +15,15 @@ members = [
 # debug = true
 # lto = "fat"
 
+[profile.dev]
+opt-level = 2
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 ligeia-core = { path = "ligeia-core" }
 ligeia-vcd = { path = "ligeia-vcd" }
+number_prefix = "0.4.0"
 
 # structopt = "0.3"
 # clap = "*"

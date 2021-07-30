@@ -1,4 +1,4 @@
-use std::{alloc::Allocator, mem, num::NonZeroUsize, ptr::NonNull, slice};
+use std::{alloc::Allocator, convert::TryInto, mem, num::NonZeroUsize, ptr::NonNull};
 #[cfg(debug_assertions)]
 use std::any::TypeId;
 
@@ -7,32 +7,42 @@ use crate::{
     waves::StorageId,
 };
 
-pub const CHANGES_PER_BLOCK: usize = 16;
+pub const CHANGES_PER_BLOCK: usize = 128;
 
-#[derive(Copy, Clone, bytemuck::Pod)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(C)]
 pub struct ChangeHeader {
     pub ts: u64, // timestamp of timesteps
 }
 
-unsafe impl bytemuck::Zeroable for ChangeHeader {}
+impl ChangeHeader {
+    fn into_bytes(self) -> [u8; 8] {
+        self.ts.to_le_bytes()
+    }
+
+    fn from_bytes(bytes: [u8; 8]) -> Self {
+        Self {
+            ts: u64::from_ne_bytes(bytes),
+        }
+    }
+}
 
 #[derive(Copy, Clone, bytemuck::Pod)]
 #[repr(C)]
-pub struct ChangeBlockHeader {
+struct BlockHeader {
     /// The byte offset from this changeblock to the next.
     pub delta_next: Option<NonZeroUsize>,
     /// Less than or equal to `CHANGES_PER_BLOCK`.
     pub len: usize,
 }
 
-impl ChangeBlockHeader {
+impl BlockHeader {
     pub fn is_full(&self) -> bool {
         self.len == CHANGES_PER_BLOCK
     }
 }
 
-unsafe impl bytemuck::Zeroable for ChangeBlockHeader {}
+unsafe impl bytemuck::Zeroable for BlockHeader {}
 
 struct StorageInfo {
     first_offset: usize,
@@ -46,11 +56,16 @@ struct StorageInfo {
     logic_type_id: TypeId,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChangeOffset(usize);
 
+pub struct ChangeListInfo {
+    pub total_bytes_used: usize,
+    pub total_storages: usize,
+}
+
 pub struct ChangeBlockList<A: Allocator> {
-    data: Vec<u8, A>,
+    data: Vec<u8, AlignedAlloc<A, { mem::align_of::<BlockHeader>() }>>,
     /// Indexed by storage ID
     storage_infos: Vec<Option<StorageInfo>>,
 }
@@ -58,7 +73,7 @@ pub struct ChangeBlockList<A: Allocator> {
 impl<A: Allocator> ChangeBlockList<A> {
     pub fn new_in(alloc: A) -> Self {
         Self {
-            data: Vec::new_in(alloc),
+            data: Vec::new_in(AlignedAlloc::new(alloc)),
             storage_infos: Vec::new(),
         }
     }
@@ -69,11 +84,15 @@ impl<A: Allocator> ChangeBlockList<A> {
                 .resize_with(storage_id.0 as usize + 1, || None);
         }
 
-        let bytes_per_change = NonZeroUsize::new(mem::size_of::<ChangeHeader>() + (width + L::PER_BYTE - 1) / L::PER_BYTE).unwrap();
+        let bytes_per_change = NonZeroUsize::new(mem::size_of::<ChangeHeader>() + ((width + L::PER_BYTE - 1) / L::PER_BYTE)).unwrap();
+
+        // This fixes the alignment as long as the alignment of the vector's allocation is _at least_ the alignment of `BlockHeader`.
+        let aligned_len = align_up(self.data.len(), mem::align_of::<BlockHeader>());
+        self.data.resize(aligned_len, 0);
 
         let current_offset = self.data.len();
 
-        let header = ChangeBlockHeader {
+        let header = BlockHeader {
             delta_next: None,
             len: 0,
         };
@@ -105,18 +124,23 @@ impl<A: Allocator> ChangeBlockList<A> {
         info.count += 1;
         let current_offset = self.data.len();
 
-        let (block_header_slice, rest) = self.data[info.last_offset..].split_at_mut(mem::size_of::<ChangeBlockHeader>());
-        let block_header: &mut ChangeBlockHeader = bytemuck::from_bytes_mut(block_header_slice);
+        let (block_header_slice, rest) = self.data[info.last_offset..].split_at_mut(mem::size_of::<BlockHeader>());
+        let block_header: &mut BlockHeader = bytemuck::from_bytes_mut(block_header_slice);
         
         let (block_header, rest) = if block_header.is_full() {
+            // This fixes the alignment as long as the alignment of the vector's allocation is _at least_ the alignment of `BlockHeader`.
+            let aligned_len = align_up(current_offset, mem::align_of::<BlockHeader>());
+
             // At this point, there's at least one block already full.
-            block_header.delta_next = Some(unsafe { NonZeroUsize::new_unchecked(current_offset - info.last_offset) });
+            block_header.delta_next = Some(unsafe { NonZeroUsize::new_unchecked(aligned_len - info.last_offset) });
             info.last_offset = current_offset;
 
             drop(block_header);
             drop(rest);
 
-            let new_header = ChangeBlockHeader {
+            self.data.resize(aligned_len, 0);
+
+            let new_header = BlockHeader {
                 delta_next: None,
                 len: 0,
             };
@@ -125,8 +149,8 @@ impl<A: Allocator> ChangeBlockList<A> {
             self.data
                 .resize(self.data.len() + info.bytes_per_change.get() * CHANGES_PER_BLOCK, 0);
 
-            let (block_header_slice, rest) = self.data[current_offset..].split_at_mut(mem::size_of::<ChangeBlockHeader>());
-            let block_header: &mut ChangeBlockHeader = bytemuck::from_bytes_mut(block_header_slice);
+            let (block_header_slice, rest) = self.data[aligned_len..].split_at_mut(mem::size_of::<BlockHeader>());
+            let block_header: &mut BlockHeader = bytemuck::from_bytes_mut(block_header_slice);
             (block_header, rest)
         } else {
             (block_header, rest)
@@ -135,7 +159,9 @@ impl<A: Allocator> ChangeBlockList<A> {
         let change_offset = block_header.len * info.bytes_per_change.get();
 
         let (header_slice, data_slice) = rest[change_offset..change_offset + info.bytes_per_change.get()].split_at_mut(mem::size_of::<ChangeHeader>());
-        header_slice.copy_from_slice(bytemuck::bytes_of(&header));
+        header_slice.copy_from_slice(&header.into_bytes());
+
+        block_header.len += 1;
 
         unsafe {
             LogicSliceMut::new(
@@ -145,48 +171,6 @@ impl<A: Allocator> ChangeBlockList<A> {
         }
     }
 
-    pub unsafe fn push_change(&mut self, storage_id: StorageId, header: ChangeHeader, data: *const u8) {
-        let info = self.storage_infos[storage_id.0 as usize].as_mut().unwrap();
-        info.count += 1;
-        let current_offset = self.data.len();
-
-        let (block_header_slice, rest) = self.data[info.last_offset..].split_at_mut(mem::size_of::<ChangeBlockHeader>());
-        let block_header: &mut ChangeBlockHeader = bytemuck::from_bytes_mut(block_header_slice);
-        
-        let (block_header, rest) = if block_header.is_full() {
-            // At this point, there's at least one block already full.
-            block_header.delta_next = Some(unsafe { NonZeroUsize::new_unchecked(current_offset - info.last_offset) });
-            info.last_offset = current_offset;
-
-            drop(block_header);
-            drop(rest);
-
-            let new_header = ChangeBlockHeader {
-                delta_next: None,
-                len: 0,
-            };
-
-            self.data.extend_from_slice(bytemuck::bytes_of(&new_header));
-            self.data
-                .resize(self.data.len() + info.bytes_per_change.get() * CHANGES_PER_BLOCK, 0);
-
-            let (block_header_slice, rest) = self.data[current_offset..].split_at_mut(mem::size_of::<ChangeBlockHeader>());
-            let block_header: &mut ChangeBlockHeader = bytemuck::from_bytes_mut(block_header_slice);
-            (block_header, rest)
-        } else {
-            (block_header, rest)
-        };
-
-        let change_offset = block_header.len * info.bytes_per_change.get();
-        let data_len = info.bytes_per_change.get() - mem::size_of::<ChangeHeader>();
-
-        let (header_slice, data_slice) = rest[change_offset..change_offset + info.bytes_per_change.get()].split_at_mut(mem::size_of::<ChangeHeader>());
-        header_slice.copy_from_slice(bytemuck::bytes_of(&header));
-        data_slice.copy_from_slice(unsafe { slice::from_raw_parts(data, data_len) });
-        
-        block_header.len += 1;
-    }
-
     pub fn count_of(&self, storage_id: StorageId) -> usize {
         self.storage_infos[storage_id.0 as usize]
             .as_ref()
@@ -194,21 +178,23 @@ impl<A: Allocator> ChangeBlockList<A> {
             .count
     }
 
+    pub fn info(&self) -> ChangeListInfo {
+        ChangeListInfo {
+            total_bytes_used: self.data.capacity(),
+            total_storages: self.storage_infos.len(),
+        }
+    }
+
     pub fn iter_storage(&self, storage_id: StorageId) -> StorageIter {
         let info = self.storage_infos[storage_id.0 as usize]
             .as_ref()
             .expect("storage not added yet");
 
-        let header: &ChangeBlockHeader = bytemuck::from_bytes(
-            &self.data[info.first_offset
-                ..info.first_offset + mem::size_of::<ChangeBlockHeader>()],
-        );
-
         StorageIter {
             block_and: &self.data[info.first_offset..],
             block_offset: info.first_offset,
             remaining: info.count,
-            remaining_in_block: header.len,
+            index_in_block: 0,
             bytes_per_change: info.bytes_per_change.get(),
         }
     }
@@ -220,8 +206,7 @@ impl<A: Allocator> ChangeBlockList<A> {
         width: usize,
     ) -> (ChangeHeader, LogicSlice<L>) {
         let offset = offset.0;
-        let header =
-            *bytemuck::from_bytes(&self.data[offset..offset + mem::size_of::<ChangeHeader>()]);
+        let header = ChangeHeader::from_bytes(self.data[offset..offset + mem::size_of::<ChangeHeader>()].try_into().unwrap());
         let ptr = NonNull::from(&self.data[offset + mem::size_of::<ChangeHeader>()]);
 
         (header, unsafe { LogicSlice::new(width, ptr) })
@@ -234,8 +219,7 @@ impl<A: Allocator> ChangeBlockList<A> {
         width: usize,
     ) -> (ChangeHeader, LogicSliceMut<L>) {
         let offset = offset.0;
-        let header =
-            *bytemuck::from_bytes(&self.data[offset..offset + mem::size_of::<ChangeHeader>()]);
+        let header = ChangeHeader::from_bytes(self.data[offset..offset + mem::size_of::<ChangeHeader>()].try_into().unwrap());
         let ptr = NonNull::from(&mut self.data[offset + mem::size_of::<ChangeHeader>()]);
 
         (header, unsafe { LogicSliceMut::new(width, ptr) })
@@ -252,16 +236,14 @@ impl<A: Allocator> ChangeBlockList<A> {
     ) {
         let (h1, ptr1) = {
             let offset = lhs.0;
-            let header =
-                *bytemuck::from_bytes(&self.data[offset..offset + mem::size_of::<ChangeHeader>()]);
+            let header = ChangeHeader::from_bytes(self.data[offset..offset + mem::size_of::<ChangeHeader>()].try_into().unwrap());
             let ptr = NonNull::from(&mut self.data[offset + mem::size_of::<ChangeHeader>()]);
             (header, ptr)
         };
 
         let (h2, ptr2) = {
             let offset = rhs.0;
-            let header =
-                *bytemuck::from_bytes(&self.data[offset..offset + mem::size_of::<ChangeHeader>()]);
+            let header = ChangeHeader::from_bytes(self.data[offset..offset + mem::size_of::<ChangeHeader>()].try_into().unwrap());
             let ptr = NonNull::from(&self.data[offset + mem::size_of::<ChangeHeader>()]);
             (header, ptr)
         };
@@ -279,7 +261,7 @@ pub struct StorageIter<'a> {
     block_and: &'a [u8],
     block_offset: usize,
     remaining: usize,
-    remaining_in_block: usize,
+    index_in_block: usize,
     bytes_per_change: usize,
 }
 
@@ -290,15 +272,17 @@ impl<'a> Iterator for StorageIter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         if self.remaining > 0 {
             self.remaining -= 1;
-            if self.remaining_in_block == 0 {
-                let header: &ChangeBlockHeader = bytemuck::from_bytes(&self.block_and[..mem::size_of::<ChangeBlockHeader>()]);
+            if self.index_in_block == CHANGES_PER_BLOCK {
+                let header: &BlockHeader = bytemuck::from_bytes(&self.block_and[..mem::size_of::<BlockHeader>()]);
                 let delta_offset = header.delta_next.unwrap().get();
                 self.block_offset += delta_offset;
                 self.block_and = &self.block_and[delta_offset..];
-                self.remaining_in_block = header.len;
+                self.index_in_block = 0;
             }
 
-            let offset = self.block_offset + mem::size_of::<ChangeBlockHeader>() + (self.bytes_per_change * (CHANGES_PER_BLOCK - self.remaining_in_block));
+            let offset = self.block_offset + mem::size_of::<BlockHeader>() + (self.bytes_per_change * self.index_in_block);
+
+            self.index_in_block += 1;
 
             Some(ChangeOffset(offset))
         } else {
@@ -312,3 +296,114 @@ impl<'a> Iterator for StorageIter<'a> {
 }
 
 impl ExactSizeIterator for StorageIter<'_> {}
+
+/// Align downwards. Returns the greatest x with alignment `align`
+/// so that x <= addr. The alignment must be a power of 2.
+fn align_down(addr: usize, align: usize) -> usize {
+    if align.is_power_of_two() {
+        addr & !(align - 1)
+    } else if align == 0 {
+        addr
+    } else {
+        panic!("`align` must be a power of 2");
+    }
+}
+
+/// Align upwards. Returns the smallest x with alignment `align`
+/// so that x >= addr. The alignment must be a power of 2.
+fn align_up(addr: usize, align: usize) -> usize {
+    align_down(addr + align - 1, align)
+}
+
+struct AlignedAlloc<A: Allocator, const ALIGN: usize> {
+    alloc: A,
+}
+
+impl<A: Allocator, const ALIGN: usize> AlignedAlloc<A, ALIGN> {
+    fn new(alloc: A) -> Self {
+        assert!(ALIGN.is_power_of_two(), "ALIGN is not power of two");
+        Self { alloc }
+    }
+}
+
+unsafe impl<A: Allocator, const ALIGN: usize> Allocator for AlignedAlloc<A, ALIGN> {
+    fn allocate(&self, layout: std::alloc::Layout) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
+        self.alloc.allocate(layout.align_to(ALIGN).unwrap())
+    }
+
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: std::alloc::Layout) {
+        unsafe {
+            self.alloc.deallocate(ptr, layout)
+        }
+    }
+
+    fn allocate_zeroed(&self, layout: std::alloc::Layout) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
+        self.alloc.allocate_zeroed(layout.align_to(ALIGN).unwrap())
+    }
+
+    unsafe fn grow(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: std::alloc::Layout,
+        new_layout: std::alloc::Layout,
+    ) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
+        unsafe {
+            self.alloc.grow(ptr, old_layout, new_layout.align_to(ALIGN).unwrap())
+        }
+    }
+
+    unsafe fn grow_zeroed(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: std::alloc::Layout,
+        new_layout: std::alloc::Layout,
+    ) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
+        unsafe {
+            self.alloc.grow_zeroed(ptr, old_layout, new_layout.align_to(ALIGN).unwrap())
+        }
+    }
+
+    unsafe fn shrink(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: std::alloc::Layout,
+        new_layout: std::alloc::Layout,
+    ) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
+        unsafe {
+            self.alloc.shrink(ptr, old_layout, new_layout.align_to(ALIGN).unwrap())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::alloc::Global;
+
+    use crate::logic;
+
+    use super::*;
+
+    #[test]
+    fn change_list_push() {
+        let mut list = ChangeBlockList::new_in(Global);
+        list.add_storage::<logic::Four>(StorageId(0), 3);
+        {
+            let mut slice = unsafe { list.push_get::<logic::Four>(StorageId(0), ChangeHeader { ts: 42 }) };
+            for i in 0..3 {
+                slice.set(i, logic::Four::One);
+            }
+        }
+
+        let mut iter = list.iter_storage(StorageId(0));
+
+        let offset = iter.next().unwrap();
+        assert_eq!(iter.next(), None);
+
+        let (header, slice) = unsafe { list.get_change::<logic::Four>(offset, 3) };
+
+        assert_eq!(header, ChangeHeader { ts: 42 });
+        for i in 0..3 {
+            assert_eq!(slice.get(i), logic::Four::One);
+        }
+    }
+}
