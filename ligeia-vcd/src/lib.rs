@@ -1,6 +1,6 @@
 #![feature(allocator_api)]
 
-use std::{alloc::Allocator, collections::{BTreeMap}, fs::File, io::{self, Read}};
+use std::{alloc::Allocator, collections::{BTreeMap}, convert::TryInto, fs::File, io::{self, Read}};
 
 use fxhash::FxHashMap;
 use ligeia_core::{Waves, WavesLoader, logic::Four, waves::{ChangeBlockList, ChangeHeader, Progress, ROOT_SCOPE, ScopeId, Scopes, Signedness, Storage, StorageId, Variable, VariableInterp}};
@@ -201,9 +201,10 @@ fn load_vcd<A: Allocator, R: Read>(alloc: A, reader: R, mut after_every_cmd: imp
         scopes,
         storages,
         changes,
+        timestamps: vec![],
     };
 
-    let mut current_timestamp = 0;
+    let mut current_timestamp_index = 0;
 
     loop {
         if let Some(command) = parser.next_command() {
@@ -211,7 +212,8 @@ fn load_vcd<A: Allocator, R: Read>(alloc: A, reader: R, mut after_every_cmd: imp
     
             match command {
                 vcd::Command::Timestamp(timestamp) => {
-                    current_timestamp = timestamp;
+                    current_timestamp_index = waves.timestamps.len().try_into().unwrap();
+                    waves.timestamps.push(timestamp);
                 },
                 vcd::Command::ChangeScalar(id_code, value) => {
                     let storage_id = storage_lookup[&id_code];
@@ -226,7 +228,7 @@ fn load_vcd<A: Allocator, R: Read>(alloc: A, reader: R, mut after_every_cmd: imp
     
                     let mut slice = unsafe {
                         waves.changes.push_get::<Four>(storage_id, ChangeHeader {
-                            ts: current_timestamp,
+                            ts: current_timestamp_index,
                         })
                     };
     
@@ -237,10 +239,10 @@ fn load_vcd<A: Allocator, R: Read>(alloc: A, reader: R, mut after_every_cmd: imp
     
                     let mut slice = unsafe {
                         waves.changes.push_get::<Four>(storage_id, ChangeHeader {
-                            ts: current_timestamp,
+                            ts: current_timestamp_index,
                         })
                     };
-    
+
                     assert_eq!(slice.width(), vector.len());
                     for (i, value) in vector.iter().enumerate() {
                         let logic = match value {

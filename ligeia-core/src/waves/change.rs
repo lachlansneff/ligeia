@@ -12,17 +12,17 @@ pub const CHANGES_PER_BLOCK: usize = 128;
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(C)]
 pub struct ChangeHeader {
-    pub ts: u64, // timestamp of timesteps
+    pub ts: u32, // timestamp of timesteps
 }
 
 impl ChangeHeader {
-    fn into_bytes(self) -> [u8; 8] {
+    fn into_bytes(self) -> [u8; 4] {
         self.ts.to_le_bytes()
     }
 
-    fn from_bytes(bytes: [u8; 8]) -> Self {
+    fn from_bytes(bytes: [u8; 4]) -> Self {
         Self {
-            ts: u64::from_ne_bytes(bytes),
+            ts: u32::from_ne_bytes(bytes),
         }
     }
 }
