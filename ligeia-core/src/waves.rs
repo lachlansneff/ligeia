@@ -6,7 +6,7 @@ use std::{alloc::Allocator, fs::File, io::Read};
 mod change;
 mod scope;
 
-pub use self::change::{ChangeBlockList, ChangeHeader, ChangeOffset, StorageIter};
+pub use self::change::{ChangeBlockList, ChangeOffset, StorageIter};
 pub use self::scope::{Scope, Scopes, ScopesError, ROOT_SCOPE};
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -14,6 +14,10 @@ pub struct StorageId(pub u32);
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ScopeId(pub u32);
+
+/// Some number of timesteps.
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Timesteps(pub u64);
 
 #[derive(Clone, Copy)]
 pub enum StorageType {

@@ -2,7 +2,7 @@ use std::{alloc::Allocator, marker::PhantomData, ops::Range};
 
 use crate::{
     logic::{Combine, Logic, LogicArray},
-    waves::{ChangeBlockList, ChangeHeader, ChangeOffset},
+    waves::{ChangeBlockList, ChangeOffset, Timesteps},
 };
 
 /// Loosely based on https://github.com/trishume/gigatrace.
@@ -55,7 +55,8 @@ impl<L: Logic, C: Combine<L>, A: Allocator> ImplicitForest<L, C, A> {
         &self,
         change_blocks: &ChangeBlockList<impl Allocator>,
         r: Range<usize>,
-    ) -> (ChangeHeader, LogicArray<L>) {
+        combined: &mut LogicArray<L>,
+    ) -> Timesteps {
         fn lsp(x: usize) -> usize {
             x & x.wrapping_neg()
         }
@@ -78,7 +79,7 @@ impl<L: Logic, C: Combine<L>, A: Allocator> ImplicitForest<L, C, A> {
             len / 2
         );
 
-        let mut combined = LogicArray::new(self.width, L::default());
+        assert_eq!(combined.width(), self.width);
         let mut combined_header = None;
 
         while ri.start < ri.end {
@@ -98,6 +99,6 @@ impl<L: Logic, C: Combine<L>, A: Allocator> ImplicitForest<L, C, A> {
             ri.start += skip;
         }
 
-        (combined_header.unwrap(), combined)
+        combined_header.unwrap()
     }
 }

@@ -28,11 +28,14 @@ pub struct Scopes {
 impl Scopes {
     pub fn new() -> Self {
         Self {
-            scopes: BTreeMap::from_iter([(ScopeId(0), InnerScope {
-                name: "".to_string(),
-                children: vec![],
-                variables: vec![],
-            })]),
+            scopes: BTreeMap::from_iter([(
+                ScopeId(0),
+                InnerScope {
+                    name: "".to_string(),
+                    children: vec![],
+                    variables: vec![],
+                },
+            )]),
         }
     }
 

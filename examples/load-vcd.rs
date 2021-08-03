@@ -2,7 +2,7 @@
 
 use std::{alloc::Global, env, error, fs::File, path::Path, time::Instant};
 
-use ligeia_core::{self, WavesLoader};
+use ligeia_core::{self, logic, ImplicitForest, WavesLoader};
 use ligeia_vcd::VcdLoader;
 use number_prefix::NumberPrefix;
 
@@ -20,9 +20,13 @@ fn main() -> Result<(), Box<dyn error::Error>> {
 
     let start = Instant::now();
 
-    let waves = LOADER.load_file(Global, &mut |progress, _| {
-        println!("{:#?}", progress);
-    }, f)?;
+    let waves = LOADER.load_file(
+        Global,
+        &mut |progress, _| {
+            println!("{:#?}", progress);
+        },
+        f,
+    )?;
 
     let elapsed = start.elapsed();
 
@@ -40,12 +44,18 @@ fn main() -> Result<(), Box<dyn error::Error>> {
     //     println!("storage id {:?} has {} changes", storage_id, waves.changes.count_of(storage_id));
     // }
 
-    let id = *waves.storages.keys().max_by_key(|&&id| waves.changes.count_of(id)).unwrap();
+    let id = *waves
+        .storages
+        .keys()
+        .max_by_key(|&&id| waves.changes.count_of(id))
+        .unwrap();
 
     let start = Instant::now();
 
+    let mut forest = ImplicitForest::<logic::Four, _, _>::new_in(1, Global);
+
     let mut count: usize = 0;
-    for _ in waves.changes.iter_storage(id) {
+    for offset in waves.changes.iter_storage(id) {
         count += 1;
     }
 

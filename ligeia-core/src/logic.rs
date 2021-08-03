@@ -6,7 +6,7 @@ use std::{
     ptr::{self, NonNull},
 };
 
-use crate::waves::ChangeHeader;
+use crate::waves::Timesteps;
 
 pub unsafe trait Logic: Copy + Default + 'static {
     /// Number of units per byte.
@@ -19,7 +19,7 @@ pub unsafe trait Logic: Copy + Default + 'static {
 }
 
 pub trait Combine<L: Logic> {
-    fn combine(lhs: (ChangeHeader, LogicSliceMut<L>), rhs: (ChangeHeader, LogicSlice<L>));
+    fn combine(lhs: (Timesteps, LogicSliceMut<L>), rhs: (Timesteps, LogicSlice<L>));
 }
 
 struct LogicSliceInner<L: Logic> {

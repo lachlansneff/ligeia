@@ -1,9 +1,21 @@
 #![feature(allocator_api)]
 
-use std::{alloc::Allocator, collections::{BTreeMap}, convert::TryInto, fs::File, io::{self, Read}};
+use std::{
+    alloc::Allocator,
+    collections::BTreeMap,
+    fs::File,
+    io::{self, Read},
+};
 
 use fxhash::FxHashMap;
-use ligeia_core::{Waves, WavesLoader, logic::Four, waves::{ChangeBlockList, ChangeHeader, Progress, ROOT_SCOPE, ScopeId, Scopes, Signedness, Storage, StorageId, Variable, VariableInterp}};
+use ligeia_core::{
+    logic::Four,
+    waves::{
+        ChangeBlockList, Progress, ScopeId, Scopes, Signedness, Storage, StorageId, Timesteps,
+        Variable, VariableInterp, ROOT_SCOPE,
+    },
+    Waves, WavesLoader,
+};
 use vcd::{Header, IdCode, Parser, ScopeItem, Value, VarType};
 
 pub struct VcdLoader;
@@ -40,7 +52,7 @@ impl<A: Allocator> WavesLoader<A> for VcdLoader {
                                 total: Some(total_len),
                                 so_far: total_len - map.len(),
                             },
-                            waves
+                            waves,
                         );
                     }
                 })?;
@@ -64,7 +76,6 @@ impl<A: Allocator> WavesLoader<A> for VcdLoader {
         _progress: &mut dyn FnMut(Progress, &Waves<A>),
         reader: &mut dyn Read,
     ) -> io::Result<Waves<A>> {
-        
         load_vcd(alloc, reader, |_, _| {})
     }
 }
@@ -72,7 +83,10 @@ impl<A: Allocator> WavesLoader<A> for VcdLoader {
 type StorageLookup = FxHashMap<IdCode, StorageId>;
 type Storages = BTreeMap<StorageId, Storage>;
 
-fn generate_scopes(header: &Header, change_block_list: &mut ChangeBlockList<impl Allocator>) -> (Scopes, StorageLookup, Storages) {
+fn generate_scopes(
+    header: &Header,
+    change_block_list: &mut ChangeBlockList<impl Allocator>,
+) -> (Scopes, StorageLookup, Storages) {
     fn recurse(
         scopes: &mut Scopes,
         storage_lookup: &mut StorageLookup,
@@ -81,13 +95,15 @@ fn generate_scopes(header: &Header, change_block_list: &mut ChangeBlockList<impl
         scope_gen: &mut impl FnMut() -> ScopeId,
         storage_gen: &mut impl FnMut() -> StorageId,
         items: &[ScopeItem],
-        parent: ScopeId
+        parent: ScopeId,
     ) {
         for item in items {
             match item {
                 ScopeItem::Scope(scope) => {
                     let id = scope_gen();
-                    scopes.add_scope(parent, id, scope.identifier.clone()).unwrap();
+                    scopes
+                        .add_scope(parent, id, scope.identifier.clone())
+                        .unwrap();
                     recurse(
                         scopes,
                         storage_lookup,
@@ -96,11 +112,14 @@ fn generate_scopes(header: &Header, change_block_list: &mut ChangeBlockList<impl
                         scope_gen,
                         storage_gen,
                         &scope.children,
-                        id
+                        id,
                     );
-                },
+                }
                 ScopeItem::Var(var) => {
-                    if !matches!(var.var_type, VarType::Wire | VarType::Reg | VarType::Integer) {
+                    if !matches!(
+                        var.var_type,
+                        VarType::Wire | VarType::Reg | VarType::Integer
+                    ) {
                         panic!("unsupported VCD variable type")
                     }
 
@@ -108,11 +127,9 @@ fn generate_scopes(header: &Header, change_block_list: &mut ChangeBlockList<impl
 
                     let (msb, lsb) = var
                         .index
-                        .map(|index| {
-                            match index {
-                                vcd::ReferenceIndex::BitSelect(bit) => (bit, bit),
-                                vcd::ReferenceIndex::Range(msb, lsb) => (msb, lsb)
-                            }
+                        .map(|index| match index {
+                            vcd::ReferenceIndex::BitSelect(bit) => (bit, bit),
+                            vcd::ReferenceIndex::Range(msb, lsb) => (msb, lsb),
                         })
                         .unwrap_or_else(|| {
                             (
@@ -122,24 +139,32 @@ fn generate_scopes(header: &Header, change_block_list: &mut ChangeBlockList<impl
                         });
 
                     storage_lookup.insert(var.code, storage_id);
-                    storages.insert(storage_id, Storage {
-                        ty: ligeia_core::waves::StorageType::FourLogic,
-                        width: var.size,
-                        start: lsb,
-                    });
+                    storages.insert(
+                        storage_id,
+                        Storage {
+                            ty: ligeia_core::waves::StorageType::FourLogic,
+                            width: var.size,
+                            start: lsb,
+                        },
+                    );
 
                     change_block_list.add_storage::<Four>(storage_id, var.size as usize);
 
-                    scopes.add_variable(parent, Variable {
-                        name: var.reference.clone(),
-                        interp: VariableInterp::Integer {
-                            storages: vec![storage_id],
-                            msb_index: msb,
-                            lsb_index: 0,
-                            signedness: Signedness::Unsigned,
-                        },
-                    }).unwrap();
-                },
+                    scopes
+                        .add_variable(
+                            parent,
+                            Variable {
+                                name: var.reference.clone(),
+                                interp: VariableInterp::Integer {
+                                    storages: vec![storage_id],
+                                    msb_index: msb,
+                                    lsb_index: 0,
+                                    signedness: Signedness::Unsigned,
+                                },
+                            },
+                        )
+                        .unwrap();
+                }
             }
         }
     }
@@ -156,9 +181,9 @@ fn generate_scopes(header: &Header, change_block_list: &mut ChangeBlockList<impl
         id
     };
 
-    let mut storage_lookup =  FxHashMap::default();
+    let mut storage_lookup = FxHashMap::default();
     let mut storages = Storages::new();
-    let mut scopes =  Scopes::new();
+    let mut scopes = Scopes::new();
 
     recurse(
         &mut scopes,
@@ -174,10 +199,14 @@ fn generate_scopes(header: &Header, change_block_list: &mut ChangeBlockList<impl
     (scopes, storage_lookup, storages)
 }
 
-fn load_vcd<A: Allocator, R: Read>(alloc: A, reader: R, mut after_every_cmd: impl FnMut(&R, &Waves<A>)) -> io::Result<Waves<A>> {
+fn load_vcd<A: Allocator, R: Read>(
+    alloc: A,
+    reader: R,
+    mut after_every_cmd: impl FnMut(&R, &Waves<A>),
+) -> io::Result<Waves<A>> {
     let mut parser = Parser::new(reader);
     let header = parser.parse_header()?;
-    
+
     let timescale = if let Some((timesteps, unit)) = header.timescale {
         timesteps as u128
             * match unit {
@@ -193,7 +222,7 @@ fn load_vcd<A: Allocator, R: Read>(alloc: A, reader: R, mut after_every_cmd: imp
     };
 
     let mut changes = ChangeBlockList::new_in(alloc);
-    
+
     let (scopes, storage_lookup, storages) = generate_scopes(&header, &mut changes);
 
     let mut waves = Waves {
@@ -201,23 +230,19 @@ fn load_vcd<A: Allocator, R: Read>(alloc: A, reader: R, mut after_every_cmd: imp
         scopes,
         storages,
         changes,
-        timestamps: vec![],
     };
-
-    let mut current_timestamp_index = 0;
 
     loop {
         if let Some(command) = parser.next_command() {
             let command = command?;
-    
+
             match command {
                 vcd::Command::Timestamp(timestamp) => {
-                    current_timestamp_index = waves.timestamps.len().try_into().unwrap();
-                    waves.timestamps.push(timestamp);
-                },
+                    waves.changes.push_timesteps(Timesteps(timestamp))
+                }
                 vcd::Command::ChangeScalar(id_code, value) => {
                     let storage_id = storage_lookup[&id_code];
-    
+
                     // VCDs are always four-valued logic
                     let logic = match value {
                         Value::V0 => Four::Zero,
@@ -225,23 +250,15 @@ fn load_vcd<A: Allocator, R: Read>(alloc: A, reader: R, mut after_every_cmd: imp
                         Value::X => Four::Unknown,
                         Value::Z => Four::HighImpedance,
                     };
-    
-                    let mut slice = unsafe {
-                        waves.changes.push_get::<Four>(storage_id, ChangeHeader {
-                            ts: current_timestamp_index,
-                        })
-                    };
-    
+
+                    let mut slice = unsafe { waves.changes.push_get::<Four>(storage_id) };
+
                     slice.set(0, logic);
                 }
                 vcd::Command::ChangeVector(id_code, vector) => {
                     let storage_id = storage_lookup[&id_code];
-    
-                    let mut slice = unsafe {
-                        waves.changes.push_get::<Four>(storage_id, ChangeHeader {
-                            ts: current_timestamp_index,
-                        })
-                    };
+
+                    let mut slice = unsafe { waves.changes.push_get::<Four>(storage_id) };
 
                     assert_eq!(slice.width(), vector.len());
                     for (i, value) in vector.iter().enumerate() {
@@ -251,14 +268,14 @@ fn load_vcd<A: Allocator, R: Read>(alloc: A, reader: R, mut after_every_cmd: imp
                             Value::X => Four::Unknown,
                             Value::Z => Four::HighImpedance,
                         };
-    
+
                         slice.set(i, logic);
                     }
                 }
                 _ => {}
             }
         } else {
-            break
+            break;
         }
 
         after_every_cmd(parser.reader(), &waves);
