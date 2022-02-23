@@ -7,3 +7,4 @@ edition = "2018"
 
 [dependencies]
 bytemuck = { version = "1.7.2", features = ["derive"] }
+itertools = "0.10"
