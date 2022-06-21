@@ -1,4 +1,6 @@
-use std::{env, error, fs::File, os::unix::prelude::MetadataExt, path::Path, time::Instant};
+use std::{
+    env, error, fs::File, io::BufReader, os::unix::prelude::MetadataExt, path::Path, time::Instant,
+};
 
 use ligeia_vcd;
 use number_prefix::NumberPrefix;
@@ -16,7 +18,7 @@ fn main() -> Result<(), Box<dyn error::Error>> {
 
     let start = Instant::now();
 
-    let mut processed = ligeia_vcd::load_vcd(f)?;
+    let mut processed = ligeia_vcd::load_vcd(BufReader::new(f))?;
 
     let elapsed = start.elapsed();
 

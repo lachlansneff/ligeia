@@ -6,5 +6,11 @@ members = [
     "ligeia",
 ]
 
+[profile.release]
+debug = true
+incremental = true
+split-debuginfo = 'packed'
+strip = 'none'
+
 [profile.dev]
 opt-level = 1
