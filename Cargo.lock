@@ -47,11 +47,6 @@ checksum = "9385f66bf6105b241aa65a61cb923ef20efc665cb9f9bb50ac2f0c4b7f378d41"
 [[package]]
 name = "ligeia"
 version = "0.1.0"
-dependencies = [
- "ligeia-core",
- "ligeia-vcd",
- "number_prefix",
-]
 
 [[package]]
 name = "ligeia-core"
@@ -74,6 +69,14 @@ dependencies = [
  "ligeia-core",
  "mapr",
  "vcd",
+]
+
+[[package]]
+name = "load-vcd"
+version = "0.0.0"
+dependencies = [
+ "ligeia-vcd",
+ "number_prefix",
 ]
 
 [[package]]
