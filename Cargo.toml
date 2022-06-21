@@ -4,5 +4,7 @@ members = [
     "ligeia-vcd",
     "ligeia-svcb",
     "ligeia",
-    "examples/load-vcd",
 ]
+
+[profile.dev]
+opt-level = 1

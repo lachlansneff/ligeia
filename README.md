@@ -4,10 +4,6 @@ A replacement for gtkwave, written in Rust with high-performance and larger-than
 
 This repo is in-progress and not usable yet. Assistance, especially on graphics, would be appreciated.
 
-## Compiling
-
-Ligeia requires a current rust nightly.
-
 ## License
 
 This repository is licensed under [MPL 2.0](https://www.mozilla.org/MPL/).
