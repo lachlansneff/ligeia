@@ -2,7 +2,7 @@
 name = "ligeia"
 version = "0.1.0"
 authors = ["Lachlan Sneff <lachlan@charted.space>"]
-edition = "2018"
+edition = "2021"
 
 [workspace]
 members = [

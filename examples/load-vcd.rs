@@ -1,12 +1,7 @@
-#![feature(allocator_api)]
+use std::{env, error, fs::File, os::unix::prelude::MetadataExt, path::Path, time::Instant};
 
-use std::{alloc::Global, env, error, fs::File, path::Path, time::Instant};
-
-use ligeia_core::{self, logic, ImplicitForest, WavesLoader};
-use ligeia_vcd::VcdLoader;
+use ligeia_vcd;
 use number_prefix::NumberPrefix;
-
-const LOADER: &dyn WavesLoader<Global> = &VcdLoader;
 
 fn main() -> Result<(), Box<dyn error::Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
@@ -17,51 +12,31 @@ fn main() -> Result<(), Box<dyn error::Error>> {
 
     let path = Path::new(&args[0]);
     let f = File::open(path)?;
+    let file_size = f.metadata()?.size();
 
     let start = Instant::now();
 
-    let waves = LOADER.load_file(
-        Global,
-        &mut |progress, _| {
-            println!("{:#?}", progress);
-        },
-        f,
-    )?;
+    let mut processed = ligeia_vcd::load_vcd(f)?;
 
     let elapsed = start.elapsed();
 
-    let info = waves.changes.info();
-
-    let size = match NumberPrefix::decimal(info.total_bytes_used as f64) {
+    let size = match NumberPrefix::decimal(file_size as f64) {
         NumberPrefix::Standalone(bytes) => format!("{} bytes", bytes),
         NumberPrefix::Prefixed(prefix, n) => format!("{:.1} {}B", n, prefix),
     };
 
-    println!("loaded vcd in {:?} using {}", elapsed, size);
-    println!("{} storages used", info.total_storages);
+    println!("loaded {} vcd in {:?}", size, elapsed);
 
-    // for &storage_id in waves.storages.keys() {
-    //     println!("storage id {:?} has {} changes", storage_id, waves.changes.count_of(storage_id));
-    // }
-
-    let id = *waves
-        .storages
-        .keys()
-        .max_by_key(|&&id| waves.changes.count_of(id))
-        .unwrap();
+    let storage_ids = processed.storage_ids();
 
     let start = Instant::now();
 
-    let mut forest = ImplicitForest::<logic::Four, _, _>::new_in(1, Global);
-
-    let mut count: usize = 0;
-    for offset in waves.changes.iter_storage(id) {
-        count += 1;
+    for id in storage_ids {
+        processed.load_storage(id, |_timestamp, _value| {})?;
     }
 
     let elapsed = start.elapsed();
-
-    println!("count: {}, elapsed: {:?}", count, elapsed);
+    println!("loaded storages in {:?}", elapsed);
 
     Ok(())
 }

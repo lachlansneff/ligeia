@@ -2,14 +2,14 @@
 name = "ligeia-vcd"
 version = "0.1.0"
 authors = ["Lachlan Sneff <lachlan.sneff@gmail.com>"]
-edition = "2018"
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 ligeia-core = { path = "../ligeia-core" }
 mapr = "0.8.0"
-fxhash = "0.2.1"
+fnv = "1.0"
 
 [dependencies.vcd]
 git = "https://github.com/lachlansneff/rust-vcd.git"
