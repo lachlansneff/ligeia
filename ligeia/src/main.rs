@@ -1,49 +1,177 @@
-use druid::{
-    menu, widget::TextBox, AppLauncher, Data, Lens, LocalizedString, Menu, Widget, WidgetExt,
-    WindowDesc,
+use std::mem;
+
+use wgpu::{util::DeviceExt, Instance};
+use winit::{
+    event::{Event, WindowEvent},
+    event_loop::{ControlFlow, EventLoop},
+    window::Window,
 };
 
-const TEXT_BOX_WIDTH: f64 = 200.0;
+async fn run(event_loop: EventLoop<()>, window: Window) {
+    let size = window.inner_size();
+    let instance = Instance::new(wgpu::Backends::all());
+    let surface = unsafe { instance.create_surface(&window) };
 
-#[derive(Clone, Data, Lens)]
-struct State {
-    name: String,
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::default(),
+            force_fallback_adapter: false,
+            // Request an adapter which can render to our surface
+            compatible_surface: Some(&surface),
+        })
+        .await
+        .expect("Failed to find an appropriate adapter");
+
+    // Create the logical device and command queue
+    let (device, queue) = adapter
+        .request_device(
+            &wgpu::DeviceDescriptor {
+                label: None,
+                features: wgpu::Features::empty(),
+                // Make sure we use the texture resolution limits from the adapter, so we can support images the size of the swapchain.
+                limits: wgpu::Limits::default().using_resolution(adapter.limits()),
+            },
+            None,
+        )
+        .await
+        .expect("Failed to create device");
+
+    let shader = device.create_shader_module(wgpu::include_wgsl!("shaders/lines.wgsl"));
+
+    let vertices: &[[f32; 2]] = &[
+        [0.0, -0.5],
+        [1.0, -0.5],
+        [1.0, 0.5],
+        [0.0, -0.5],
+        [1.0, 0.5],
+        [0.0, 0.5],
+    ];
+    let points: &[[f32; 2]] = &[[0.1, 0.2], [0.2, 0.2], [0.4, 0.1]];
+
+    let vertices_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: bytemuck::cast_slice(vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let points_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: bytemuck::cast_slice(points),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+
+    let swapchain_format = surface.get_supported_formats(&adapter)[0];
+
+    let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: None,
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: "vs_main",
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: mem::size_of::<[f32; 2]>() as _,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![0 => Float32x2],
+            }],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: "fs_main",
+            targets: &[Some(wgpu::ColorTargetState {
+                format: swapchain_format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::all(),
+            })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+    });
+
+    let bind_group_layout = render_pipeline.get_bind_group_layout(0);
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: points_buffer.as_entire_binding(),
+        }],
+    });
+
+    let mut config = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format: swapchain_format,
+        width: size.width,
+        height: size.height,
+        present_mode: wgpu::PresentMode::Fifo,
+    };
+
+    surface.configure(&device, &config);
+
+    event_loop.run(move |event, _, control_flow| {
+        // Have the closure take ownership of the resources.
+        // `event_loop.run` never returns, therefore we must do this to ensure
+        // the resources are properly cleaned up.
+        let _ = (&instance, &adapter, &shader);
+
+        *control_flow = ControlFlow::Wait;
+        match event {
+            Event::WindowEvent {
+                event: WindowEvent::Resized(size),
+                ..
+            } => {
+                config.width = size.width;
+                config.height = config.height;
+                surface.configure(&device, &config);
+                // On macos the window needs to be redrawn manually after resizing
+                window.request_redraw();
+            }
+            Event::RedrawRequested(_) => {
+                let frame = surface
+                    .get_current_texture()
+                    .expect("failed to acquire next swap chain texture");
+                let view = frame
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+
+                let mut encoder =
+                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+                {
+                    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: None,
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: true,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                    });
+
+                    rpass.set_pipeline(&render_pipeline);
+                    rpass.set_vertex_buffer(0, vertices_buffer.slice(..));
+                    rpass.set_bind_group(0, &bind_group, &[]);
+                    rpass.draw(0..6, 0..6);
+                }
+
+                queue.submit([encoder.finish()]);
+                frame.present();
+            }
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            } => {
+                *control_flow = ControlFlow::Exit;
+            }
+            _ => {}
+        }
+    })
 }
 
 fn main() {
-    let main_window = WindowDesc::new(build_root_widget())
-        .title("Ligeia")
-        .menu(|_, _, _| menu_bar());
-
-    let initial_state = State {
-        name: "Foobar".to_string(),
-    };
-
-    AppLauncher::with_window(main_window)
-        .log_to_console()
-        .launch(initial_state)
-        .expect("failed to launch application");
-}
-
-fn build_root_widget() -> impl Widget<State> {
-    // a textbox that modifies `name`.
-    let textbox = TextBox::new()
-        .with_placeholder("Who are we greeting?")
-        .with_text_size(18.0)
-        .fix_width(TEXT_BOX_WIDTH)
-        .lens(State::name);
-
-    textbox
-}
-
-fn menu_bar<T: Data>() -> Menu<T> {
-    use menu::sys::mac::{application, file};
-    Menu::new(LocalizedString::new(""))
-        .entry(
-            Menu::new(LocalizedString::new("application-menu"))
-                .entry(application::about())
-                .entry(application::preferences())
-                .entry(application::quit()),
-        )
-        .entry(Menu::new(LocalizedString::new("File")).entry(file::open_file()))
+    let event_loop = EventLoop::new();
+    let window = Window::new(&event_loop).unwrap();
+    pollster::block_on(run(event_loop, window));
 }
