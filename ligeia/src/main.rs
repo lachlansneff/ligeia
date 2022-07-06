@@ -211,7 +211,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                                     b: 0.9453125,
                                     a: 1.0,
                                 }),
-                                store: false,
+                                store: true,
                             },
                         }
                     } else {
@@ -225,6 +225,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                                     b: 0.9453125,
                                     a: 1.0,
                                 }),
+                                // Storing pre-resolve MSAA data is unnecessary if it isn't used later.
+                                // On tile-based GPU, avoid store can reduce your app's memory footprint.
                                 store: false,
                             },
                         }
