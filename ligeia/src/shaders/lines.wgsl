@@ -1,8 +1,16 @@
 
-let half_width: f32 = 0.01;
+struct Uniforms {
+    scale: vec2<f32>,
+    feather_fraction: f32,
+    line_width: f32,
+}
 
 @group(0)
 @binding(0)
+var<uniform> uniforms: Uniforms;
+
+@group(0)
+@binding(1)
 var<storage, read> points: array<vec2<f32>>;
 
 struct VertexOutput {
@@ -22,15 +30,13 @@ fn vs_main(
     let x_basis: vec2<f32> = point_b - point_a;
     // a unit vector normal to the line
     let y_basis: vec2<f32> = normalize(vec2<f32>(-x_basis.y, x_basis.x));
-    let the_point: vec2<f32> = point_a + x_basis * vertex.x + y_basis * half_width * vertex.y;
+    let the_point: vec2<f32> = point_a + x_basis * vertex.x + y_basis * uniforms.line_width * vertex.y;
 
     var result: VertexOutput;
-    result.position = vec4<f32>(the_point, 0.0, 1.0);
+    result.position = vec4<f32>(the_point * uniforms.scale, 0.0, 1.0);
     result.offset = vertex.y * 2f;
     return result;
 }
-
-let feather: f32 = 0.5;
 
 @fragment
 fn fs_main(
@@ -39,11 +45,11 @@ fn fs_main(
     let dist: f32 = abs(input.offset);
 
     var alpha: f32;
-    if dist > 1f - feather {
-        alpha = (1f - dist) / feather;
+    if dist > 1f - uniforms.feather_fraction {
+        alpha = (1f - dist) / uniforms.feather_fraction;
     } else {
         alpha = 1f;
     }
 
-    return vec4<f32>(1.0, 1.0, 0.0, alpha);
+    return vec4<f32>(0.0, 0.0, 0.0, alpha);
 }

@@ -7,6 +7,39 @@ use winit::{
     window::Window,
 };
 
+#[derive(Copy, Clone, bytemuck::NoUninit)]
+#[repr(C)]
+struct Uniforms {
+    scale: [f32; 2],
+    feather_fraction: f32,
+    line_width: f32,
+}
+
+fn create_msaa_frambuffer(
+    device: &wgpu::Device,
+    config: &wgpu::SurfaceConfiguration,
+    sample_count: u32,
+) -> wgpu::TextureView {
+    let multisampled_texture_extent = wgpu::Extent3d {
+        width: config.width,
+        height: config.height,
+        depth_or_array_layers: 1,
+    };
+    let multisampled_frame_descriptor = &wgpu::TextureDescriptor {
+        size: multisampled_texture_extent,
+        mip_level_count: 1,
+        sample_count,
+        dimension: wgpu::TextureDimension::D2,
+        format: config.format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        label: None,
+    };
+
+    device
+        .create_texture(multisampled_frame_descriptor)
+        .create_view(&wgpu::TextureViewDescriptor::default())
+}
+
 async fn run(event_loop: EventLoop<()>, window: Window) {
     let size = window.inner_size();
     let instance = Instance::new(wgpu::Backends::all());
@@ -36,6 +69,16 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         .await
         .expect("Failed to create device");
 
+    let swapchain_format = surface.get_supported_formats(&adapter)[0];
+
+    let mut config = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format: swapchain_format,
+        width: size.width,
+        height: size.height,
+        present_mode: wgpu::PresentMode::Fifo,
+    };
+
     let shader = device.create_shader_module(wgpu::include_wgsl!("shaders/lines.wgsl"));
 
     let vertices: &[[f32; 2]] = &[
@@ -46,8 +89,14 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         [1.0, 0.5],
         [0.0, 0.5],
     ];
-    let points: &[[f32; 2]] = &[[0.1, 0.2], [0.2, 0.2], [0.4, 0.1]];
+    let points: &[[f32; 2]] = &[[10., 100.], [300., 10.], [300., 500.]];
 
+    let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: mem::size_of::<Uniforms>() as _,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
     let vertices_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
         contents: bytemuck::cast_slice(vertices),
@@ -59,7 +108,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         usage: wgpu::BufferUsages::STORAGE,
     });
 
-    let swapchain_format = surface.get_supported_formats(&adapter)[0];
+    let sample_count = 1;
 
     let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: None,
@@ -84,7 +133,10 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         }),
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            ..Default::default()
+        },
         multiview: None,
     });
 
@@ -92,19 +144,19 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
         layout: &bind_group_layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: points_buffer.as_entire_binding(),
-        }],
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: points_buffer.as_entire_binding(),
+            },
+        ],
     });
 
-    let mut config = wgpu::SurfaceConfiguration {
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        format: swapchain_format,
-        width: size.width,
-        height: size.height,
-        present_mode: wgpu::PresentMode::Fifo,
-    };
+    let mut msaa_framebuffer = create_msaa_frambuffer(&device, &config, sample_count);
 
     surface.configure(&device, &config);
 
@@ -121,7 +173,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 ..
             } => {
                 config.width = size.width;
-                config.height = config.height;
+                config.height = size.height;
+                msaa_framebuffer = create_msaa_frambuffer(&device, &config, sample_count);
                 surface.configure(&device, &config);
                 // On macos the window needs to be redrawn manually after resizing
                 window.request_redraw();
@@ -134,19 +187,52 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                     .texture
                     .create_view(&wgpu::TextureViewDescriptor::default());
 
+                queue.write_buffer(
+                    &uniform_buffer,
+                    0,
+                    bytemuck::bytes_of(&Uniforms {
+                        scale: [2.0 / config.width as f32, 2.0 / config.height as f32],
+                        feather_fraction: 0.3,
+                        line_width: 10.0,
+                    }),
+                );
+
                 let mut encoder =
                     device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
                 {
-                    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: None,
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    let color_attachment = if sample_count == 1 {
+                        wgpu::RenderPassColorAttachment {
                             view: &view,
                             resolve_target: None,
                             ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                                store: true,
+                                load: wgpu::LoadOp::Clear(wgpu::Color {
+                                    r: 0.9453125,
+                                    g: 0.9453125,
+                                    b: 0.9453125,
+                                    a: 1.0,
+                                }),
+                                store: false,
                             },
-                        })],
+                        }
+                    } else {
+                        wgpu::RenderPassColorAttachment {
+                            view: &msaa_framebuffer,
+                            resolve_target: Some(&view),
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color {
+                                    r: 0.9453125,
+                                    g: 0.9453125,
+                                    b: 0.9453125,
+                                    a: 1.0,
+                                }),
+                                store: false,
+                            },
+                        }
+                    };
+
+                    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: None,
+                        color_attachments: &[Some(color_attachment)],
                         depth_stencil_attachment: None,
                     });
 

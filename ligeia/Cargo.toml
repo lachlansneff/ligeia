@@ -9,4 +9,4 @@ edition = "2021"
 wgpu = "0.13.1"
 pollster = "0.2.5"
 winit = "0.26.1"
-bytemuck = "1.10.0"
+bytemuck = { version = "1.10.0", features = ["derive"] }
