@@ -192,8 +192,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                     0,
                     bytemuck::bytes_of(&Uniforms {
                         scale: [2.0 / config.width as f32, 2.0 / config.height as f32],
-                        feather_fraction: 0.3,
-                        line_width: 10.0,
+                        feather_fraction: 0.4,
+                        line_width: 7.0,
                     }),
                 );
 
@@ -206,9 +206,9 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                             resolve_target: None,
                             ops: wgpu::Operations {
                                 load: wgpu::LoadOp::Clear(wgpu::Color {
-                                    r: 0.9453125,
-                                    g: 0.9453125,
-                                    b: 0.9453125,
+                                    r: 0.15,
+                                    g: 0.15,
+                                    b: 0.25,
                                     a: 1.0,
                                 }),
                                 store: true,
